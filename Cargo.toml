@@ -5,9 +5,13 @@ edition = "2021"
 
 [dependencies]
 crossterm = "0.28.1"
-ctrlc = { version = "3.4.5", features = ["termination"] }
 ratatui = "0.29.0"
 tui-logger = "0.14.0"
 tui-menu = "0.3.0"
 log = "0.4.22"
 windows = { version = "0.58.0", features = ["Win32_Storage_FileSystem"] }
+num-format = "0.4.4"
+async-fs = "2.1.2"
+futures-lite = { version = "2.5.0", default-features = false, features = ["futures-io", "std"] }
+smol = "2.0.2"
+futures-concurrency = "7.6.2"

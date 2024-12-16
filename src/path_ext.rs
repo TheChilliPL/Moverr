@@ -1,16 +1,13 @@
-use std::{
-    borrow::Cow,
-    ffi::OsString,
-    os::windows::ffi::OsStrExt,
-    path::{Path, PathBuf},
-};
-
+use crate::file_size::num_ext::AsBytes;
+use crate::file_size::FileSize;
+use crate::sync::CancellationToken;
+use crate::volume_information::VolumeInformation;
+use futures_lite::StreamExt;
+use std::{borrow::Cow, io, os::windows::ffi::OsStrExt, path::Path};
 use windows::{
-    core::{PCWSTR, PWSTR},
+    core::PCWSTR,
     Win32::{Foundation::MAX_PATH, Storage::FileSystem::GetVolumeInformationW},
 };
-
-use crate::volume_information::VolumeInformation;
 
 pub trait PathExt {
     /// Find the nearest existing ancestor path.
@@ -20,6 +17,15 @@ pub trait PathExt {
     /// Find the real volume root path.
     fn find_volume_root(self: &Self) -> Option<Cow<Path>>;
     fn get_volume_information(&self) -> Result<VolumeInformation, Option<windows::core::Error>>;
+    async fn calc_directory_stats(
+        &self,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<DirectoryStats, DirectoryStatsError>;
+    async fn calc_directory_stats_callback(
+        &self,
+        cancellation_token: Option<&CancellationToken>,
+        callback: impl FnOnce(Result<DirectoryStats, DirectoryStatsError>) + Send,
+    );
 }
 
 impl PathExt for Path {
@@ -118,4 +124,64 @@ impl PathExt for Path {
             file_system_name: String::from_utf16_lossy(&fs_type_utf16),
         })
     }
+
+    async fn calc_directory_stats(
+        &self,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<DirectoryStats, DirectoryStatsError> {
+        let mut stats = DirectoryStats::default();
+
+        let mut children = async_fs::read_dir(self)
+            .await
+            .map_err(DirectoryStatsError::Io)?;
+
+        while let Some(child) = children.try_next().await.map_err(DirectoryStatsError::Io)? {
+            if let Some(cancellation_token) = cancellation_token {
+                if cancellation_token.is_cancelled() {
+                    return Err(DirectoryStatsError::Cancelled);
+                }
+            }
+            let metadata = async_fs::symlink_metadata(child.path())
+                .await
+                .map_err(DirectoryStatsError::Io)?;
+            if metadata.is_symlink() {
+                stats.symlink_count += 1;
+            } else if metadata.is_dir() {
+                stats.subfolder_count += 1;
+                let child_stats =
+                    Box::pin(child.path().calc_directory_stats(cancellation_token)).await?;
+                stats.subfolder_count += child_stats.subfolder_count;
+                stats.file_count += child_stats.file_count;
+                stats.size += child_stats.size;
+            } else {
+                stats.file_count += 1;
+                stats.size += metadata.len().bytes();
+            }
+        }
+
+        Ok(stats)
+    }
+
+    async fn calc_directory_stats_callback(
+        &self,
+        cancellation_token: Option<&CancellationToken>,
+        callback: impl FnOnce(Result<DirectoryStats, DirectoryStatsError>) + Send,
+    ) {
+        let stats = self.calc_directory_stats(cancellation_token).await;
+        callback(stats);
+    }
+}
+
+#[derive(Debug)]
+pub enum DirectoryStatsError {
+    Io(io::Error),
+    Cancelled,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct DirectoryStats {
+    pub subfolder_count: u32,
+    pub file_count: u32,
+    pub symlink_count: u32,
+    pub size: FileSize,
 }
