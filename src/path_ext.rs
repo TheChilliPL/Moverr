@@ -152,6 +152,7 @@ impl PathExt for Path {
                     Box::pin(child.path().calc_directory_stats(cancellation_token)).await?;
                 stats.subfolder_count += child_stats.subfolder_count;
                 stats.file_count += child_stats.file_count;
+                stats.symlink_count += child_stats.symlink_count;
                 stats.size += child_stats.size;
             } else {
                 stats.file_count += 1;

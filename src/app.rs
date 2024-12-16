@@ -2,7 +2,7 @@ use crate::project::ProjectState;
 use crate::sync::CancellationToken;
 use crossterm::event;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use log::{error, info};
+use log::{error, info, warn};
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::prelude::{Style, Stylize};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Row, Table};
@@ -10,7 +10,7 @@ use ratatui::{DefaultTerminal, Frame};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::{env, io};
-use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget};
+use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
 use tui_menu::{Menu, MenuEvent, MenuItem, MenuState};
 
 pub const APP_TITLE: &str = concat!(
@@ -26,9 +26,10 @@ pub const APP_TITLE: &str = concat!(
 /// This is used to determine which part of the application has focus.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FocusState {
-    None,
-    Menu,
+    // None,
     Project,
+    Menu,
+    Logger,
 }
 
 /// The menu actions that can be performed.
@@ -44,6 +45,7 @@ pub struct MoverApp<'a> {
     pub project_state: Option<ProjectState>,
     pub focus: FocusState,
     pub menu: MenuState<Option<MenuAction<'a>>>,
+    logger_state: TuiWidgetState,
 }
 
 impl MoverApp<'_> {
@@ -51,7 +53,7 @@ impl MoverApp<'_> {
         let mut new = Self {
             terminate: CancellationToken::new(),
             project_state: None,
-            focus: FocusState::None,
+            focus: FocusState::Project,
             menu: MenuState::new(vec![
                 MenuItem::group(
                     "File",
@@ -77,6 +79,7 @@ impl MoverApp<'_> {
                     ],
                 ),
             ]),
+            logger_state: Default::default(),
         };
 
         // Check if a project was passed as an argument. If so, try to open it.
@@ -162,7 +165,7 @@ fn draw_app(frame: &mut Frame, state: &mut MoverApp) {
     let [main_area, logger_area] = Layout::horizontal([Constraint::Fill(60), Constraint::Fill(40)])
         .areas(main_block.inner(frame.area()));
     frame.render_widget(main_block, frame.area());
-    if let Some(project_state) = &state.project_state {
+    if let Some(ref mut project_state) = state.project_state {
         project_state.draw(frame, main_area);
     } else {
         let project = Paragraph::new("No directory opened!")
@@ -184,7 +187,8 @@ fn draw_app(frame: &mut Frame, state: &mut MoverApp) {
         .style_debug(Style::default().cyan())
         .style_info(Style::default().green().bold())
         .style_warn(Style::default().yellow().bold())
-        .style_error(Style::default().red().bold());
+        .style_error(Style::default().red().bold())
+        .state(&state.logger_state);
     frame.render_widget(logger, logger_area);
     frame.render_stateful_widget(Menu::new(), frame.area(), &mut state.menu);
 }
@@ -192,8 +196,8 @@ fn draw_app(frame: &mut Frame, state: &mut MoverApp) {
 fn handle_term_event(event: Event, state: &mut MoverApp) {
     match event {
         Event::Key(key_event) => {
-            if state.focus == FocusState::Menu {
-                match key_event {
+            match state.focus {
+                FocusState::Menu => match key_event {
                     KeyEvent {
                         kind: KeyEventKind::Press,
                         modifiers: KeyModifiers::NONE,
@@ -223,7 +227,68 @@ fn handle_term_event(event: Event, state: &mut MoverApp) {
                         _ => {}
                     },
                     _ => {}
+                },
+                FocusState::Project => {
+                    if let Some(ref mut project) = state.project_state {
+                        match key_event {
+                            KeyEvent {
+                                kind: KeyEventKind::Press,
+                                modifiers: KeyModifiers::NONE,
+                                code,
+                                ..
+                            } => match code {
+                                KeyCode::Up => {
+                                    project.table_state.select_previous();
+                                    return;
+                                }
+                                KeyCode::Down => {
+                                    project.table_state.select_next();
+                                    return;
+                                }
+                                KeyCode::Home => {
+                                    project.table_state.select_first();
+                                    return;
+                                }
+                                KeyCode::End => {
+                                    project.table_state.select_last();
+                                    return;
+                                }
+                                KeyCode::Enter => {
+                                    let selected_id = project.table_state.selected();
+                                    if let Some(selected_id) = selected_id {
+                                        let entry = &project.entries[selected_id];
+                                        info!("Selected entry: {:?}", entry);
+                                    } else {
+                                        warn!("No entry selected!");
+                                    }
+                                    return;
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
                 }
+                FocusState::Logger => match key_event {
+                    KeyEvent {
+                        kind: KeyEventKind::Press,
+                        modifiers: KeyModifiers::NONE,
+                        code,
+                        ..
+                    } => match code {
+                        KeyCode::Esc => {
+                            state.logger_state.transition(TuiWidgetEvent::EscapeKey);
+                            state.focus = FocusState::Project;
+                            return;
+                        }
+                        KeyCode::PageDown => {
+                            state.logger_state.transition(TuiWidgetEvent::NextPageKey);
+                            return;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
             }
 
             match key_event {
@@ -243,11 +308,20 @@ fn handle_term_event(event: Event, state: &mut MoverApp) {
                 } => {
                     if state.focus == FocusState::Menu {
                         state.menu.reset();
-                        state.focus = FocusState::None;
+                        state.focus = FocusState::Project;
                     } else {
                         state.menu.activate();
                         state.focus = FocusState::Menu;
                     }
+                }
+                KeyEvent {
+                    kind: KeyEventKind::Press,
+                    modifiers: KeyModifiers::NONE,
+                    code: KeyCode::PageUp,
+                    ..
+                } => {
+                    state.focus = FocusState::Logger;
+                    state.logger_state.transition(TuiWidgetEvent::PrevPageKey);
                 }
                 _ => {}
             }
@@ -261,6 +335,7 @@ fn handle_menu_event(event: MenuAction, state: &mut MoverApp) {
         MenuAction::Open => {
             state.try_open_project(Path::new("G:\\")).unwrap();
             state.menu.reset();
+            state.focus = FocusState::Project;
         }
         MenuAction::OpenRecent(file) => {
             info!("Opening recent file: {}", file);

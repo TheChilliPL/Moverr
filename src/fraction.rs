@@ -56,6 +56,13 @@ impl Fraction {
             Err(())
         }
     }
+
+    pub fn from_ratio(numerator: u32, denominator: u32) -> Result<Fraction, ()> {
+        if denominator == 0 {
+            return Err(());
+        }
+        Fraction::try_from(numerator as f64 / denominator as f64)
+    }
 }
 
 impl Into<f64> for Fraction {
@@ -133,6 +140,12 @@ mod tests {
     #[test]
     fn test_from_percent() {
         let fraction = Fraction::from_percent(50.0).unwrap();
+        assert_approx_eq(fraction.into_f64(), 0.5);
+    }
+
+    #[test]
+    fn test_from_ratio() {
+        let fraction = Fraction::from_ratio(1, 2).unwrap();
         assert_approx_eq(fraction.into_f64(), 0.5);
     }
 

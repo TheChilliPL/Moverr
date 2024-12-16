@@ -6,14 +6,15 @@ use crate::path_ext::{DirectoryStats, PathExt};
 use crate::sync::CancellationToken;
 use crate::throbber::{throbber_with_style, ThrobberStyle};
 use crate::IO_EXECUTOR;
+use crossterm::style::style;
 use futures_concurrency::concurrent_stream::IntoConcurrentStream;
 use futures_concurrency::future::Join;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::prelude::Style;
-use ratatui::style::Stylize;
-use ratatui::widgets::{Block, ListState, Row, Table, Widget};
+use ratatui::style::{Modifier, Stylize};
+use ratatui::widgets::{Block, ListState, Row, Table, TableState, Widget};
 use ratatui::Frame;
 use smol::{spawn, Executor};
 use std::fs::read_dir;
@@ -26,7 +27,7 @@ use std::{io, thread};
 pub struct ProjectState {
     pub directory: PathBuf,
     pub entries: Vec<ProjectEntry>,
-    pub list_state: ListState,
+    pub table_state: TableState,
     cancellation_token: Arc<CancellationToken>,
 }
 
@@ -110,7 +111,7 @@ impl ProjectState {
         Ok(Self {
             directory,
             entries,
-            list_state: Default::default(),
+            table_state: Default::default(),
             cancellation_token: Arc::new(CancellationToken::new()),
         })
     }
@@ -120,33 +121,39 @@ impl ProjectState {
         Ok(())
     }
 
-    pub fn draw(&self, frame: &mut Frame, area: Rect) {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         let widget = Table::new(
-            self.entries.iter().map(|entry| match entry {
-                ProjectEntry::Directory(directory) => {
-                    let name = directory.name.to_owned();
-                    let size = directory.stats().map(|s| s.size);
-                    let size_cell = match size {
-                        Some(size) => size.to_string().into(),
-                        None => format!(
-                            "{} ??? B",
-                            throbber_with_style(frame, &ThrobberStyle::BRAILLE_CIRCLE)
-                        )
-                            .into(),
-                    };
-                    let mut style = Style::default();
-                    let state = match &directory.state {
-                        ProjectDirectoryEntryState::InOriginalLocation => "".to_string(),
-                        ProjectDirectoryEntryState::SymlinkedTo { path } => {
-                            style = style.green();
-                            format!("→ {}", path.display())
-                        }
-                        _ => format!("{:?}", directory.state), // TODO
-                    };
-                    Row::new([name, size_cell, state]).style(style)
+            self.entries.iter().enumerate().map(|(id, entry)| {
+                let mut style = Style::default();
+                let is_selected = self.table_state.selected() == Some(id);
+                if is_selected {
+                    style = style.reversed();
                 }
-                ProjectEntry::File(file) => {
-                    Row::new(vec![file.name.clone(), file.size.to_string().into()])
+                match entry {
+                    ProjectEntry::Directory(directory) => {
+                        let name = directory.name.to_owned();
+                        let size = directory.stats().map(|s| s.size);
+                        let size_cell = match size {
+                            Some(size) => size.to_string().into(),
+                            None => format!(
+                                "{}",
+                                throbber_with_style(frame, &ThrobberStyle::BRAILLE_CIRCLE)
+                            )
+                            .into(),
+                        };
+                        let state = match &directory.state {
+                            ProjectDirectoryEntryState::InOriginalLocation => "".to_string(),
+                            ProjectDirectoryEntryState::SymlinkedTo { path } => {
+                                style = style.green();
+                                format!("→ {}", path.display())
+                            }
+                            _ => format!("{:?}", directory.state), // TODO
+                        };
+                        Row::new([name, size_cell, state]).style(style)
+                    }
+                    ProjectEntry::File(file) => {
+                        Row::new(vec![file.name.clone(), file.size.to_string().into()]).style(style)
+                    }
                 }
             }),
             [
@@ -155,9 +162,9 @@ impl ProjectState {
                 Constraint::Percentage(70),
             ],
         )
-            .header(Row::new(["Name", "Size", ""]))
-            .block(Block::bordered().title(format!("Project: {}", self.directory.display())));
-        frame.render_widget(widget, area);
+        .header(Row::new(["Name", "Size", ""]).bold().reversed())
+        .block(Block::bordered().title(format!("Project: {}", self.directory.display())));
+        frame.render_stateful_widget(widget, area, &mut self.table_state);
     }
 
     pub fn start_calc(&self) {
@@ -180,6 +187,12 @@ impl ProjectState {
                                 .file_name().unwrap().to_str().unwrap(),
                                 result.size.to_string());
                             *stats = Some(result);
+                        } else {
+                            warn!(
+                                "Failed to calculate stats for {}: {:?}",
+                                path.display(),
+                                result
+                            );
                         }
                     }
                 }),
@@ -200,14 +213,16 @@ pub enum ProjectDirectoryEntryState {
     /// The directory is being moved to another location.
     MovingTo { path: PathBuf, progress: Fraction },
     /// The directory is being moved back from another location.
-    MovingFrom(PathBuf),
+    MovingFrom { path: PathBuf, progress: Fraction },
 }
 
+#[derive(Debug)]
 pub enum ProjectEntry {
     Directory(ProjectDirectoryEntry),
     File(ProjectFileEntry),
 }
 
+#[derive(Debug)]
 pub struct ProjectDirectoryEntry {
     pub name: String,
     pub state: ProjectDirectoryEntryState,
@@ -226,6 +241,7 @@ impl ProjectDirectoryEntry {
     }
 }
 
+#[derive(Debug)]
 pub struct ProjectFileEntry {
     pub name: String,
     pub size: FileSize,

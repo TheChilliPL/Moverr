@@ -63,6 +63,16 @@ impl<'a> ThrobberStyle<'a> {
         speed: 2,
         frames: &[".  ", ".. ", "...", " ..", "  .", "   "],
     };
+
+    pub const ARROW_LEFT: ThrobberStyle<'static> = ThrobberStyle {
+        speed: 4,
+        frames: &["   ", "  ←", " ← ", "←  "],
+    };
+
+    pub const ARROW_RIGHT: ThrobberStyle<'static> = ThrobberStyle {
+        speed: 4,
+        frames: &["   ", "  →", " → ", "→  "],
+    };
 }
 
 pub fn throbber_with_style<'a>(frame: &Frame, style: &'a ThrobberStyle) -> &'a str {
