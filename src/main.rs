@@ -11,11 +11,16 @@ mod volume_information;
 mod widgets;
 
 use crate::file_size::num_ext::AsBytes;
-use crate::path_ext::PathExt;
-use log::LevelFilter;
-use smol::{block_on, Executor};
+use crate::path_ext::{ProcessDirectoryProgress, PathExt, MoveAndSymlinkProgress};
+use log::{debug, error, info, LevelFilter};
+use smol::{block_on, Executor, Timer};
 use std::future::pending;
 use std::{io, thread};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use crate::file_size::FileSize;
+use crate::sync::CancellationToken;
 
 pub static IO_EXECUTOR: Executor = Executor::new();
 
@@ -24,48 +29,29 @@ fn main() -> io::Result<()> {
     tui_logger::set_default_level(LevelFilter::max());
 
     thread::spawn(|| block_on(IO_EXECUTOR.run(pending::<()>())));
+
     // IO_EXECUTOR
     //     .spawn(async {
     //         warn!("Meow");
     //     })
     //     .detach();
 
-    // IO_EXECUTOR
-    //     .spawn(async {
-    //         let source = Path::new("G:\\The Binding of Isaac Rebirth");
-    //         let dest = Path::new("C:\\The Binding of Isaac Rebirth");
-    //
-    //         let progress = Arc::new(Mutex::new(CopyDirectoryProgress::new(
-    //             4889,
-    //             2_184_723_066.bytes(),
-    //         )));
-    //
-    //         let token = Arc::new(CancellationToken::new());
-    //
-    //         {
-    //             let fut = source.copy_directory(dest, Some(progress.clone()), Some(token.clone()));
-    //
-    //             let task = IO_EXECUTOR.spawn(fut);
-    //
-    //             // yield_now().await;
-    //             Timer::after(Duration::from_secs(1)).await;
-    //
-    //             {
-    //                 let progress = progress.lock().unwrap();
-    //                 debug!("Progress: {:?}", progress);
-    //                 token.cancel();
-    //             }
-    //
-    //             let out = task.await;
-    //
-    //             {
-    //                 let progress = progress.lock().unwrap();
-    //                 debug!("Progress: {:?}", progress);
-    //             }
-    //             debug!("Result: {:?}", out);
-    //         }
-    //     })
-    //     .detach();
+    IO_EXECUTOR
+        .spawn(async {
+            let source = Path::new("D:\\pre-copy");
+            let dest = Path::new("D:\\post-copy");
+
+            let stats = source.calc_directory_stats(None).await.unwrap();
+
+            let progress = Arc::new(Mutex::new(MoveAndSymlinkProgress::from(&stats)));
+
+            let res = source
+                .move_and_symlink(dest, Some(progress.clone()), None)
+                .await;
+
+            info!("Result: {:?}", res);
+        })
+        .detach();
 
     let mut terminal = ratatui::init();
     terminal.clear()?;

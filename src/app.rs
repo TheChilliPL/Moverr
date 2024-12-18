@@ -44,6 +44,7 @@ pub enum FocusState {
 pub enum MenuAction<'a> {
     Open,
     OpenRecent(&'a str),
+    CloseProj,
     Exit,
 }
 
@@ -75,7 +76,7 @@ impl MoverrApp<'_> {
                     "File",
                     vec![
                         MenuItem::item("Open", Some(MenuAction::Open)),
-                        MenuItem::item("Close", Some(MenuAction::Open)),
+                        MenuItem::item("Close", Some(MenuAction::CloseProj)),
                         // MenuItem::group(
                         //     "Open recent",
                         //     vec![
@@ -208,7 +209,7 @@ fn draw_app(frame: &mut Frame, state: &mut MoverrApp) {
         .title_alignment(Alignment::Center)
         .borders(Borders::TOP)
         .border_type(BorderType::Double);
-    let [main_area, logger_area] = Layout::horizontal([Constraint::Fill(60), Constraint::Fill(40)])
+    let [main_area, logger_area] = Layout::horizontal([Fill(60), Fill(40)])
         .areas(main_block.inner(frame.area()));
     frame.render_widget(main_block, frame.area());
     if let Some(ref mut project_state) = state.project_state {
@@ -430,6 +431,12 @@ fn handle_menu_event(event: MenuAction, state: &mut MoverrApp) {
                 .open_popup(Box::new(OpenProjectPopup::default()))
                 .unwrap();
             state.menu.reset();
+        }
+        MenuAction::CloseProj => {
+            let res = state.close_project();
+            if let Err(ref res) = res {
+                error!("Couldn't clone project: {}", res);
+            }
         }
         MenuAction::OpenRecent(file) => {
             info!("Opening recent file: {}", file);

@@ -7,6 +7,7 @@ use futures_lite::StreamExt;
 use log::error;
 use std::sync::{Arc, Mutex};
 use std::{borrow::Cow, io, os::windows::ffi::OsStrExt, path::Path};
+use smol::fs;
 use windows::{
     core::PCWSTR,
     Win32::{Foundation::MAX_PATH, Storage::FileSystem::GetVolumeInformationW},
@@ -27,9 +28,21 @@ pub trait PathExt {
     async fn copy_directory(
         &self,
         dest: &Path,
-        progress: Option<Arc<Mutex<CopyDirectoryProgress>>>,
+        progress: Option<Arc<Mutex<ProcessDirectoryProgress>>>,
         cancellation_token: Option<Arc<CancellationToken>>,
     ) -> Result<(), CopyDirectoryError>;
+    async fn verify_copy(
+        &self,
+        dest: &Path,
+        progress: Option<Arc<Mutex<ProcessDirectoryProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), VerifyDirectoryError>;
+    async fn move_and_symlink(
+        &self,
+        dest: &Path,
+        progress: Option<Arc<Mutex<MoveAndSymlinkProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), MoveAndSymlinkError>;
 }
 
 impl PathExt for Path {
@@ -175,12 +188,12 @@ impl PathExt for Path {
     async fn copy_directory(
         &self,
         dest: &Path,
-        progress: Option<Arc<Mutex<CopyDirectoryProgress>>>,
+        progress: Option<Arc<Mutex<ProcessDirectoryProgress>>>,
         cancellation_token: Option<Arc<CancellationToken>>,
     ) -> Result<(), CopyDirectoryError> {
         if dest.exists() {
             if let Some(progress) = progress {
-                progress.lock().unwrap().state = CopyDirectoryState::Aborted;
+                progress.lock().unwrap().state = ProcessDirectoryState::Aborted;
             }
 
             return Err(CopyDirectoryError::DestinationExists);
@@ -196,7 +209,7 @@ impl PathExt for Path {
         async fn _copy_directory(
             source: &Path,
             dest: &Path,
-            progress: &Option<Arc<Mutex<CopyDirectoryProgress>>>,
+            progress: &Option<Arc<Mutex<ProcessDirectoryProgress>>>,
             cancellation_token: Option<Arc<CancellationToken>>,
         ) -> Result<(), CopyDirectoryError> {
             let mut children = async_fs::read_dir(source)
@@ -219,7 +232,7 @@ impl PathExt for Path {
                 let child_path = child.path();
                 let child_dest = dest.join(child.file_name());
 
-                let metadata = async_fs::symlink_metadata(child.path())
+                let metadata = async_fs::symlink_metadata(&child_path)
                     .await
                     .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
                 if metadata.is_symlink() {
@@ -234,16 +247,14 @@ impl PathExt for Path {
                         &progress.clone(),
                         cancellation_token.clone(),
                     ))
-                    .await?;
+                        .await?;
                 } else {
                     async_fs::copy(&child_path, &child_dest)
                         .await
                         .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
 
                     if let Some(progress) = progress.as_ref() {
-                        let mut progress = progress.lock().unwrap();
-                        progress.copied_files += 1;
-                        progress.copied_size += metadata.len().bytes();
+                        progress.lock().unwrap().process_file(metadata.len().bytes());
                     }
                 }
             }
@@ -262,13 +273,144 @@ impl PathExt for Path {
             }
 
             if let Some(progress) = progress {
-                progress.lock().unwrap().state = CopyDirectoryState::Aborted;
+                progress.lock().unwrap().state = ProcessDirectoryState::Aborted;
             }
         } else if let Some(progress) = progress {
-            progress.lock().unwrap().state = CopyDirectoryState::Finished;
+            progress.lock().unwrap().state = ProcessDirectoryState::Finished;
         }
 
         result
+    }
+
+    async fn verify_copy(
+        &self,
+        dest: &Path,
+        progress: Option<Arc<Mutex<ProcessDirectoryProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), VerifyDirectoryError> {
+        let mut children = async_fs::read_dir(self)
+            .await
+            .map_err(|e| VerifyDirectoryError::Io(e.kind()))?;
+
+        while let Some(child) = children
+            .try_next()
+            .await
+            .map_err(|e| VerifyDirectoryError::Io(e.kind()))?
+        {
+            if let Some(cancellation_token) = cancellation_token.clone() {
+                if cancellation_token.is_cancelled() {
+                    return Err(VerifyDirectoryError::Cancelled);
+                }
+            }
+
+            let child_path = child.path();
+            let child_dest = dest.join(child.file_name());
+
+            let source_metadata = async_fs::symlink_metadata(&child_path)
+                .await
+                .map_err(|e| VerifyDirectoryError::Io(e.kind()))?;
+            let dest_metadata = async_fs::symlink_metadata(&child_dest)
+                .await
+                .map_err(|e| VerifyDirectoryError::Io(e.kind()))?;
+
+            if source_metadata.is_symlink() {
+                if !dest_metadata.is_symlink() {
+                    return Err(VerifyDirectoryError::InvalidData);
+                }
+            } else if source_metadata.is_dir() {
+                if !dest_metadata.is_dir() {
+                    return Err(VerifyDirectoryError::InvalidData);
+                }
+                Box::pin(child_path.verify_copy(&child_dest, progress.clone(), cancellation_token.clone())).await?;
+            } else {
+                if !dest_metadata.is_file() {
+                    return Err(VerifyDirectoryError::InvalidData);
+                }
+                if source_metadata.len() != dest_metadata.len() {
+                    return Err(VerifyDirectoryError::InvalidData);
+                }
+
+                if let Some(progress) = progress.as_ref() {
+                    progress.lock().unwrap().process_file(source_metadata.len().bytes());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn move_and_symlink(
+        &self,
+        dest: &Path,
+        progress: Option<Arc<Mutex<MoveAndSymlinkProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), MoveAndSymlinkError> {
+        let inner_progress = if let Some(progress) = progress.as_ref() {
+            let mut progress = progress.lock().unwrap();
+            progress.stage = MoveAndSymlinkStage::Copying;
+            Some(progress.progress.clone())
+        } else { None };
+
+        let copy_res = self.copy_directory(dest, inner_progress.clone(), cancellation_token.clone()).await;
+
+        if let Err(err) = copy_res {
+            return match err {
+                CopyDirectoryError::DestinationExists => {
+                    Err(MoveAndSymlinkError::DestinationExists)
+                }
+                CopyDirectoryError::SymlinkEncountered => {
+                    Err(MoveAndSymlinkError::SymlinkEncountered)
+                }
+                CopyDirectoryError::Cancelled => {
+                    Err(MoveAndSymlinkError::Cancelled)
+                }
+                CopyDirectoryError::Io(e) => {
+                    Err(MoveAndSymlinkError::Io(e))
+                }
+            };
+        }
+
+        if let Some(progress) = progress.as_ref() {
+            progress.lock().unwrap().stage = MoveAndSymlinkStage::Verifying;
+        }
+
+        let verify_res = self.verify_copy(dest, inner_progress.clone(), cancellation_token.clone()).await;
+
+        if let Err(err) = verify_res {
+            return match err {
+                VerifyDirectoryError::Cancelled => {
+                    Err(MoveAndSymlinkError::Cancelled)
+                }
+                VerifyDirectoryError::InvalidData => {
+                    Err(MoveAndSymlinkError::SymlinkEncountered)
+                }
+                VerifyDirectoryError::Io(e) => {
+                    Err(MoveAndSymlinkError::Io(e))
+                }
+            };
+        }
+
+        if let Some(progress) = progress.as_ref() {
+            progress.lock().unwrap().stage = MoveAndSymlinkStage::Symlinking;
+        }
+
+        let remove_res = async_fs::remove_dir_all(self).await;
+
+        if let Err(err) = remove_res {
+            return Err(MoveAndSymlinkError::Io(err.kind()));
+        }
+
+        let symlink_res = async_fs::windows::symlink_dir(dest, self).await;
+
+        if let Err(err) = symlink_res {
+            return Err(MoveAndSymlinkError::Io(err.kind()));
+        }
+
+        if let Some(progress) = progress.as_ref() {
+            progress.lock().unwrap().stage = MoveAndSymlinkStage::Finished;
+        }
+
+        Ok(())
     }
 }
 
@@ -294,39 +436,101 @@ pub enum CopyDirectoryError {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum VerifyDirectoryError {
+    Io(io::ErrorKind),
+    Cancelled,
+    InvalidData,
+}
+
 #[derive(Debug, Default, Clone, Copy)]
-pub enum CopyDirectoryState {
+pub enum ProcessDirectoryState {
     #[default]
-    Copying,
+    InProgress,
     Finished,
     Aborted,
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct CopyDirectoryProgress {
-    pub state: CopyDirectoryState,
+pub struct ProcessDirectoryProgress {
+    pub state: ProcessDirectoryState,
     pub total_files: u32,
-    pub copied_files: u32,
+    pub processed_files: u32,
     pub total_size: FileSize,
-    pub copied_size: FileSize,
+    pub processed_size: FileSize,
 }
 
-impl CopyDirectoryProgress {
+impl From<&DirectoryStats> for ProcessDirectoryProgress {
+    fn from(value: &DirectoryStats) -> Self {
+        ProcessDirectoryProgress::new(value.file_count, value.size)
+    }
+}
+
+impl ProcessDirectoryProgress {
     pub fn new(total_files: u32, total_size: FileSize) -> Self {
         Self {
-            state: CopyDirectoryState::Copying,
+            state: ProcessDirectoryState::InProgress,
             total_files,
-            copied_files: 0,
+            processed_files: 0,
             total_size,
-            copied_size: FileSize::ZERO,
+            processed_size: FileSize::ZERO,
         }
     }
 
     pub fn copied_files_frac(&self) -> Fraction {
-        Fraction::from_ratio(self.copied_files, self.total_files).unwrap()
+        Fraction::from_ratio(self.processed_files, self.total_files).unwrap()
     }
 
     pub fn copied_size_frac(&self) -> Fraction {
-        Fraction::from_ratio(self.copied_size, self.total_size).unwrap()
+        Fraction::from_ratio(self.processed_size, self.total_size).unwrap()
+    }
+
+    pub fn zero(&mut self) {
+        self.state = ProcessDirectoryState::InProgress;
+        self.processed_files = 0;
+        self.processed_size = FileSize::ZERO;
+    }
+
+    pub fn process_file(&mut self, size: FileSize) {
+        self.processed_files += 1;
+        self.processed_size += size;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum MoveAndSymlinkStage {
+    #[default]
+    Copying,
+    Verifying,
+    Symlinking,
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MoveAndSymlinkError {
+    Io(io::ErrorKind),
+    DestinationExists,
+    SymlinkEncountered,
+    Cancelled,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MoveAndSymlinkProgress {
+    pub stage: MoveAndSymlinkStage,
+    pub progress: Arc<Mutex<ProcessDirectoryProgress>>,
+}
+
+impl From<&DirectoryStats> for MoveAndSymlinkProgress {
+    fn from(value: &DirectoryStats) -> Self {
+        Self::new(value.file_count, value.size)
+    }
+}
+
+impl MoveAndSymlinkProgress {
+    pub fn new(total_files: u32, total_size: FileSize) -> Self {
+        Self {
+            stage: MoveAndSymlinkStage::Copying,
+            progress: Arc::new(Mutex::new(ProcessDirectoryProgress::new(total_files, total_size))),
+        }
     }
 }
