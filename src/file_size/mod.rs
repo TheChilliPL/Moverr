@@ -11,8 +11,14 @@ pub mod units;
 pub struct FileSize(u64);
 
 impl FileSize {
-    fn from_bytes(bytes: u64) -> Self {
+    pub(crate) const ZERO: FileSize = FileSize(0);
+
+    pub fn from_bytes(bytes: u64) -> Self {
         Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> u64 {
+        self.0
     }
 }
 

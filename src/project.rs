@@ -1,8 +1,8 @@
-use crate::app::MoverApp;
+use crate::app::MoverrApp;
 use crate::file_size::num_ext::AsBytes;
 use crate::file_size::FileSize;
 use crate::fraction::Fraction;
-use crate::path_ext::{DirectoryStats, PathExt};
+use crate::path_ext::{DirectoryStats, DirectoryStatsError, PathExt};
 use crate::sync::CancellationToken;
 use crate::throbber::{throbber_with_style, ThrobberStyle};
 use crate::IO_EXECUTOR;
@@ -14,6 +14,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::prelude::Style;
 use ratatui::style::{Modifier, Stylize};
+use ratatui::text::Line;
+use ratatui::widgets::block::{title, Title};
 use ratatui::widgets::{Block, ListState, Row, Table, TableState, Widget};
 use ratatui::Frame;
 use smol::{spawn, Executor};
@@ -121,7 +123,7 @@ impl ProjectState {
         Ok(())
     }
 
-    pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+    pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
         let widget = Table::new(
             self.entries.iter().enumerate().map(|(id, entry)| {
                 let mut style = Style::default();
@@ -132,9 +134,10 @@ impl ProjectState {
                 match entry {
                     ProjectEntry::Directory(directory) => {
                         let name = directory.name.to_owned();
-                        let size = directory.stats().map(|s| s.size);
-                        let size_cell = match size {
-                            Some(size) => size.to_string().into(),
+                        let stats = directory.stats();
+                        let size_cell = match stats {
+                            Some(Ok(ref stats)) => stats.size.to_string().into(),
+                            Some(Err(_)) => "⚠️".into(),
                             None => format!(
                                 "{}",
                                 throbber_with_style(frame, &ThrobberStyle::BRAILLE_CIRCLE)
@@ -142,7 +145,21 @@ impl ProjectState {
                             .into(),
                         };
                         let state = match &directory.state {
-                            ProjectDirectoryEntryState::InOriginalLocation => "".to_string(),
+                            ProjectDirectoryEntryState::InOriginalLocation => match stats {
+                                Some(Ok(ref stats)) => {
+                                    if stats.symlink_count > 0 {
+                                        style = style.red();
+                                        "Can't move: has symlinks".to_string()
+                                    } else {
+                                        "".to_string()
+                                    }
+                                }
+                                Some(Err(ref err)) => {
+                                    style = style.yellow();
+                                    format!("Couldn't read size: {:?}", err)
+                                }
+                                None => "".to_string(),
+                            },
                             ProjectDirectoryEntryState::SymlinkedTo { path } => {
                                 style = style.green();
                                 format!("→ {}", path.display())
@@ -163,7 +180,18 @@ impl ProjectState {
             ],
         )
         .header(Row::new(["Name", "Size", ""]).bold().reversed())
-        .block(Block::bordered().title(format!("Project: {}", self.directory.display())));
+        .block(
+            Block::bordered()
+                .title(format!("Project: {}", self.directory.display()))
+                .title_bottom(
+                    Line::from(if focused {
+                        "[↑/↓] Select [←/→] Move [Home/End] First/Last [Esc] Menu"
+                    } else {
+                        ""
+                    })
+                    .right_aligned(),
+                ),
+        );
         frame.render_stateful_widget(widget, area, &mut self.table_state);
     }
 
@@ -180,20 +208,24 @@ impl ProjectState {
                     // info!("Spawning…");
                     async move {
                         // info!("Spawned!");
-                        let result = path.calc_directory_stats(Some(&*cancellation_token)).await;
+                        let result = path.calc_directory_stats(Some(&cancellation_token)).await;
                         let mut stats = stats_mutex.lock().unwrap();
-                        if let Ok(result) = result {
-                            debug!(target: "io-thread", "Calculated that {} is {}", path
-                                .file_name().unwrap().to_str().unwrap(),
-                                result.size.to_string());
-                            *stats = Some(result);
+                        if let Ok(ref result) = result {
+                            debug!(
+                                target: "io-thread",
+                                "Calculated that {} is {}",
+                                path.file_name().unwrap().to_str().unwrap(),
+                                result.size.to_string()
+                            );
                         } else {
                             warn!(
+                                target: "io-thread",
                                 "Failed to calculate stats for {}: {:?}",
                                 path.display(),
                                 result
                             );
                         }
+                        *stats = Some(result);
                     }
                 }),
                 ProjectEntry::File(_) => None,
@@ -226,15 +258,15 @@ pub enum ProjectEntry {
 pub struct ProjectDirectoryEntry {
     pub name: String,
     pub state: ProjectDirectoryEntryState,
-    stats: Arc<Mutex<Option<DirectoryStats>>>,
+    stats: Arc<Mutex<Option<Result<DirectoryStats, DirectoryStatsError>>>>,
 }
 
 impl ProjectDirectoryEntry {
-    pub fn stats(&self) -> Option<DirectoryStats> {
+    pub fn stats(&self) -> Option<Result<DirectoryStats, DirectoryStatsError>> {
         self.stats.lock().ok()?.clone()
     }
 
-    pub fn set_stats(&self, stats: DirectoryStats) {
+    pub fn set_stats(&self, stats: Result<DirectoryStats, DirectoryStatsError>) {
         let mut mutex_guard = self.stats.lock().unwrap();
         assert!(mutex_guard.is_none());
         *mutex_guard = Some(stats);

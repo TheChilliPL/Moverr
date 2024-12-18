@@ -1,3 +1,4 @@
+use crate::file_size::FileSize;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::{Add, Sub};
 
@@ -56,12 +57,36 @@ impl Fraction {
             Err(())
         }
     }
+}
 
-    pub fn from_ratio(numerator: u32, denominator: u32) -> Result<Fraction, ()> {
+pub trait FromRatio<T> {
+    fn from_ratio(numerator: T, denominator: T) -> Result<Fraction, ()>;
+}
+
+impl FromRatio<u32> for Fraction {
+    fn from_ratio(numerator: u32, denominator: u32) -> Result<Fraction, ()> {
         if denominator == 0 {
             return Err(());
         }
         Fraction::try_from(numerator as f64 / denominator as f64)
+    }
+}
+
+impl FromRatio<u64> for Fraction {
+    fn from_ratio(numerator: u64, denominator: u64) -> Result<Fraction, ()> {
+        if denominator == 0 {
+            return Err(());
+        }
+        Fraction::try_from(numerator as f64 / denominator as f64)
+    }
+}
+
+impl FromRatio<FileSize> for Fraction {
+    fn from_ratio(numerator: FileSize, denominator: FileSize) -> Result<Fraction, ()> {
+        if denominator == FileSize::ZERO {
+            return Err(());
+        }
+        Fraction::try_from((numerator.as_bytes() as f64) / (denominator.as_bytes() as f64))
     }
 }
 
@@ -145,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_from_ratio() {
-        let fraction = Fraction::from_ratio(1, 2).unwrap();
+        let fraction = Fraction::from_ratio(1u32, 2u32).unwrap();
         assert_approx_eq(fraction.into_f64(), 0.5);
     }
 

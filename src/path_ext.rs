@@ -1,8 +1,11 @@
 use crate::file_size::num_ext::AsBytes;
 use crate::file_size::FileSize;
+use crate::fraction::{Fraction, FromRatio};
 use crate::sync::CancellationToken;
 use crate::volume_information::VolumeInformation;
 use futures_lite::StreamExt;
+use log::error;
+use std::sync::{Arc, Mutex};
 use std::{borrow::Cow, io, os::windows::ffi::OsStrExt, path::Path};
 use windows::{
     core::PCWSTR,
@@ -21,11 +24,12 @@ pub trait PathExt {
         &self,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<DirectoryStats, DirectoryStatsError>;
-    async fn calc_directory_stats_callback(
+    async fn copy_directory(
         &self,
-        cancellation_token: Option<&CancellationToken>,
-        callback: impl FnOnce(Result<DirectoryStats, DirectoryStatsError>) + Send,
-    );
+        dest: &Path,
+        progress: Option<Arc<Mutex<CopyDirectoryProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), CopyDirectoryError>;
 }
 
 impl PathExt for Path {
@@ -133,17 +137,22 @@ impl PathExt for Path {
 
         let mut children = async_fs::read_dir(self)
             .await
-            .map_err(DirectoryStatsError::Io)?;
+            .map_err(|e| DirectoryStatsError::Io(e.kind()))?;
 
-        while let Some(child) = children.try_next().await.map_err(DirectoryStatsError::Io)? {
+        while let Some(child) = children
+            .try_next()
+            .await
+            .map_err(|e| DirectoryStatsError::Io(e.kind()))?
+        {
             if let Some(cancellation_token) = cancellation_token {
                 if cancellation_token.is_cancelled() {
                     return Err(DirectoryStatsError::Cancelled);
                 }
             }
+
             let metadata = async_fs::symlink_metadata(child.path())
                 .await
-                .map_err(DirectoryStatsError::Io)?;
+                .map_err(|e| DirectoryStatsError::Io(e.kind()))?;
             if metadata.is_symlink() {
                 stats.symlink_count += 1;
             } else if metadata.is_dir() {
@@ -163,26 +172,161 @@ impl PathExt for Path {
         Ok(stats)
     }
 
-    async fn calc_directory_stats_callback(
+    async fn copy_directory(
         &self,
-        cancellation_token: Option<&CancellationToken>,
-        callback: impl FnOnce(Result<DirectoryStats, DirectoryStatsError>) + Send,
-    ) {
-        let stats = self.calc_directory_stats(cancellation_token).await;
-        callback(stats);
+        dest: &Path,
+        progress: Option<Arc<Mutex<CopyDirectoryProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), CopyDirectoryError> {
+        if dest.exists() {
+            if let Some(progress) = progress {
+                progress.lock().unwrap().state = CopyDirectoryState::Aborted;
+            }
+
+            return Err(CopyDirectoryError::DestinationExists);
+        }
+
+        async_fs::create_dir_all(dest)
+            .await
+            .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
+
+        /// Inner function that doesn't clean up the destination directory on error/cancellation
+        ///
+        /// `dest` must be an existing directory here.
+        async fn _copy_directory(
+            source: &Path,
+            dest: &Path,
+            progress: &Option<Arc<Mutex<CopyDirectoryProgress>>>,
+            cancellation_token: Option<Arc<CancellationToken>>,
+        ) -> Result<(), CopyDirectoryError> {
+            let mut children = async_fs::read_dir(source)
+                .await
+                .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
+
+            // Processing children consecutively, as file system operations aren't fully
+            // parallelizable anyway
+            while let Some(child) = children
+                .try_next()
+                .await
+                .map_err(|e| CopyDirectoryError::Io(e.kind()))?
+            {
+                if let Some(cancellation_token) = cancellation_token.clone() {
+                    if cancellation_token.is_cancelled() {
+                        return Err(CopyDirectoryError::Cancelled);
+                    }
+                }
+
+                let child_path = child.path();
+                let child_dest = dest.join(child.file_name());
+
+                let metadata = async_fs::symlink_metadata(child.path())
+                    .await
+                    .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
+                if metadata.is_symlink() {
+                    return Err(CopyDirectoryError::SymlinkEncountered);
+                } else if metadata.is_dir() {
+                    async_fs::create_dir(&child_dest)
+                        .await
+                        .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
+                    Box::pin(_copy_directory(
+                        &child_path,
+                        &child_dest,
+                        &progress.clone(),
+                        cancellation_token.clone(),
+                    ))
+                    .await?;
+                } else {
+                    async_fs::copy(&child_path, &child_dest)
+                        .await
+                        .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
+
+                    if let Some(progress) = progress.as_ref() {
+                        let mut progress = progress.lock().unwrap();
+                        progress.copied_files += 1;
+                        progress.copied_size += metadata.len().bytes();
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        let result = _copy_directory(self, dest, &progress, cancellation_token).await;
+
+        if result.is_err() {
+            // Error/cancellation occurred, clean up the destination directory
+            // Ignore any errors that occur during cleanup
+            let res = async_fs::remove_dir_all(dest).await;
+            if res.is_err() {
+                error!(target: "copy_directory", "Failed to clean up destination directory {:?}. {:?}", dest, res);
+            }
+
+            if let Some(progress) = progress {
+                progress.lock().unwrap().state = CopyDirectoryState::Aborted;
+            }
+        } else if let Some(progress) = progress {
+            progress.lock().unwrap().state = CopyDirectoryState::Finished;
+        }
+
+        result
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum DirectoryStatsError {
-    Io(io::Error),
+    Io(io::ErrorKind),
     Cancelled,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct DirectoryStats {
     pub subfolder_count: u32,
     pub file_count: u32,
     pub symlink_count: u32,
     pub size: FileSize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CopyDirectoryError {
+    Io(io::ErrorKind),
+    DestinationExists,
+    SymlinkEncountered,
+    Cancelled,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub enum CopyDirectoryState {
+    #[default]
+    Copying,
+    Finished,
+    Aborted,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct CopyDirectoryProgress {
+    pub state: CopyDirectoryState,
+    pub total_files: u32,
+    pub copied_files: u32,
+    pub total_size: FileSize,
+    pub copied_size: FileSize,
+}
+
+impl CopyDirectoryProgress {
+    pub fn new(total_files: u32, total_size: FileSize) -> Self {
+        Self {
+            state: CopyDirectoryState::Copying,
+            total_files,
+            copied_files: 0,
+            total_size,
+            copied_size: FileSize::ZERO,
+        }
+    }
+
+    pub fn copied_files_frac(&self) -> Fraction {
+        Fraction::from_ratio(self.copied_files, self.total_files).unwrap()
+    }
+
+    pub fn copied_size_frac(&self) -> Fraction {
+        Fraction::from_ratio(self.copied_size, self.total_size).unwrap()
+    }
 }
