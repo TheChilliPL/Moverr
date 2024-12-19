@@ -1,5 +1,5 @@
 use crate::popups::{OpenProjectPopup, Popup};
-use crate::project::ProjectState;
+use crate::project::{ProjectDirectoryEntryState, ProjectState};
 use crate::sync::CancellationToken;
 use crate::widgets::{TextInput, TextInputState};
 use crossterm::event;
@@ -12,7 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Row, Table};
 use ratatui::{DefaultTerminal, Frame};
 use std::any::Any;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::{env, io};
@@ -54,7 +54,6 @@ pub struct MoverrApp<'a> {
     pub focus: FocusState,
     pub menu: MenuState<Option<MenuAction<'a>>>,
     pub logger_state: TuiWidgetState,
-    pub text_input_state: TextInputState,
     pub popup: Option<Box<dyn Popup>>,
 }
 
@@ -97,7 +96,6 @@ impl MoverrApp<'_> {
                 ),
             ]),
             logger_state: Default::default(),
-            text_input_state: Default::default(),
             popup: None,
         };
 
@@ -209,8 +207,8 @@ fn draw_app(frame: &mut Frame, state: &mut MoverrApp) {
         .title_alignment(Alignment::Center)
         .borders(Borders::TOP)
         .border_type(BorderType::Double);
-    let [main_area, logger_area] = Layout::horizontal([Fill(60), Fill(40)])
-        .areas(main_block.inner(frame.area()));
+    let [main_area, logger_area] =
+        Layout::horizontal([Fill(60), Fill(40)]).areas(main_block.inner(frame.area()));
     frame.render_widget(main_block, frame.area());
     if let Some(ref mut project_state) = state.project_state {
         project_state.draw(frame, main_area, state.focus == FocusState::Project);
@@ -348,11 +346,25 @@ fn handle_term_event(event: Event, state: &mut MoverrApp) {
                                 project.table_state.select_last();
                                 return;
                             }
-                            KeyCode::Enter => {
+                            KeyCode::Right => {
                                 let selected_id = project.table_state.selected();
                                 if let Some(selected_id) = selected_id {
                                     let entry = &project.entries[selected_id];
-                                    info!("Selected entry: {:?}", entry);
+                                    match entry {
+                                        crate::project::ProjectEntry::Directory(dir) => {
+                                            let res = dir.try_start_move_to(
+                                                project,
+                                                Path::new("F:\\Games").join(&dir.name),
+                                            );
+
+                                            if res.is_err() {
+                                                error!("Directory {:?} couldn't be moved!", dir);
+                                            }
+                                        }
+                                        crate::project::ProjectEntry::File(file) => {
+                                            warn!("Selected file: {:?}. Nothing to do!", file);
+                                        }
+                                    }
                                 } else {
                                     warn!("No entry selected!");
                                 }

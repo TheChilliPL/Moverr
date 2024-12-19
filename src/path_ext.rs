@@ -5,9 +5,9 @@ use crate::sync::CancellationToken;
 use crate::volume_information::VolumeInformation;
 use futures_lite::StreamExt;
 use log::error;
+use smol::fs;
 use std::sync::{Arc, Mutex};
 use std::{borrow::Cow, io, os::windows::ffi::OsStrExt, path::Path};
-use smol::fs;
 use windows::{
     core::PCWSTR,
     Win32::{Foundation::MAX_PATH, Storage::FileSystem::GetVolumeInformationW},
@@ -113,7 +113,6 @@ impl PathExt for Path {
             .as_os_str()
             .encode_wide()
             .collect();
-        println!("path_utf16: {:?}", path_utf16);
         const BUFFER_SIZE: usize = MAX_PATH as usize + 1;
 
         let mut volume_name_utf16 = [0u16; BUFFER_SIZE];
@@ -247,14 +246,17 @@ impl PathExt for Path {
                         &progress.clone(),
                         cancellation_token.clone(),
                     ))
-                        .await?;
+                    .await?;
                 } else {
                     async_fs::copy(&child_path, &child_dest)
                         .await
                         .map_err(|e| CopyDirectoryError::Io(e.kind()))?;
 
                     if let Some(progress) = progress.as_ref() {
-                        progress.lock().unwrap().process_file(metadata.len().bytes());
+                        progress
+                            .lock()
+                            .unwrap()
+                            .process_file(metadata.len().bytes());
                     }
                 }
             }
@@ -321,7 +323,12 @@ impl PathExt for Path {
                 if !dest_metadata.is_dir() {
                     return Err(VerifyDirectoryError::InvalidData);
                 }
-                Box::pin(child_path.verify_copy(&child_dest, progress.clone(), cancellation_token.clone())).await?;
+                Box::pin(child_path.verify_copy(
+                    &child_dest,
+                    progress.clone(),
+                    cancellation_token.clone(),
+                ))
+                .await?;
             } else {
                 if !dest_metadata.is_file() {
                     return Err(VerifyDirectoryError::InvalidData);
@@ -331,7 +338,10 @@ impl PathExt for Path {
                 }
 
                 if let Some(progress) = progress.as_ref() {
-                    progress.lock().unwrap().process_file(source_metadata.len().bytes());
+                    progress
+                        .lock()
+                        .unwrap()
+                        .process_file(source_metadata.len().bytes());
                 }
             }
         }
@@ -349,9 +359,13 @@ impl PathExt for Path {
             let mut progress = progress.lock().unwrap();
             progress.stage = MoveAndSymlinkStage::Copying;
             Some(progress.progress.clone())
-        } else { None };
+        } else {
+            None
+        };
 
-        let copy_res = self.copy_directory(dest, inner_progress.clone(), cancellation_token.clone()).await;
+        let copy_res = self
+            .copy_directory(dest, inner_progress.clone(), cancellation_token.clone())
+            .await;
 
         if let Err(err) = copy_res {
             return match err {
@@ -361,12 +375,8 @@ impl PathExt for Path {
                 CopyDirectoryError::SymlinkEncountered => {
                     Err(MoveAndSymlinkError::SymlinkEncountered)
                 }
-                CopyDirectoryError::Cancelled => {
-                    Err(MoveAndSymlinkError::Cancelled)
-                }
-                CopyDirectoryError::Io(e) => {
-                    Err(MoveAndSymlinkError::Io(e))
-                }
+                CopyDirectoryError::Cancelled => Err(MoveAndSymlinkError::Cancelled),
+                CopyDirectoryError::Io(e) => Err(MoveAndSymlinkError::Io(e)),
             };
         }
 
@@ -374,19 +384,15 @@ impl PathExt for Path {
             progress.lock().unwrap().stage = MoveAndSymlinkStage::Verifying;
         }
 
-        let verify_res = self.verify_copy(dest, inner_progress.clone(), cancellation_token.clone()).await;
+        let verify_res = self
+            .verify_copy(dest, inner_progress.clone(), cancellation_token.clone())
+            .await;
 
         if let Err(err) = verify_res {
             return match err {
-                VerifyDirectoryError::Cancelled => {
-                    Err(MoveAndSymlinkError::Cancelled)
-                }
-                VerifyDirectoryError::InvalidData => {
-                    Err(MoveAndSymlinkError::SymlinkEncountered)
-                }
-                VerifyDirectoryError::Io(e) => {
-                    Err(MoveAndSymlinkError::Io(e))
-                }
+                VerifyDirectoryError::Cancelled => Err(MoveAndSymlinkError::Cancelled),
+                VerifyDirectoryError::InvalidData => Err(MoveAndSymlinkError::SymlinkEncountered),
+                VerifyDirectoryError::Io(e) => Err(MoveAndSymlinkError::Io(e)),
             };
         }
 
@@ -420,7 +426,7 @@ pub enum DirectoryStatsError {
     Cancelled,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct DirectoryStats {
     pub subfolder_count: u32,
     pub file_count: u32,
@@ -530,7 +536,10 @@ impl MoveAndSymlinkProgress {
     pub fn new(total_files: u32, total_size: FileSize) -> Self {
         Self {
             stage: MoveAndSymlinkStage::Copying,
-            progress: Arc::new(Mutex::new(ProcessDirectoryProgress::new(total_files, total_size))),
+            progress: Arc::new(Mutex::new(ProcessDirectoryProgress::new(
+                total_files,
+                total_size,
+            ))),
         }
     }
 }

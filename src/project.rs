@@ -2,7 +2,9 @@ use crate::app::MoverrApp;
 use crate::file_size::num_ext::AsBytes;
 use crate::file_size::FileSize;
 use crate::fraction::Fraction;
-use crate::path_ext::{DirectoryStats, DirectoryStatsError, PathExt};
+use crate::path_ext::{
+    DirectoryStats, DirectoryStatsError, MoveAndSymlinkProgress, MoveAndSymlinkStage, PathExt,
+};
 use crate::sync::CancellationToken;
 use crate::throbber::{throbber_with_style, ThrobberStyle};
 use crate::IO_EXECUTOR;
@@ -21,6 +23,7 @@ use ratatui::Frame;
 use smol::{spawn, Executor};
 use std::fs::read_dir;
 use std::future::Future;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Arc, Mutex};
@@ -78,11 +81,11 @@ impl ProjectState {
                     let dir_entry = ProjectEntry::Directory(ProjectDirectoryEntry {
                         name,
                         state: if is_symlink {
-                            ProjectDirectoryEntryState::SymlinkedTo {
+                            Arc::new(Mutex::new(ProjectDirectoryEntryState::SymlinkedTo {
                                 path: entry.path().read_link().unwrap(),
-                            }
+                            }))
                         } else {
-                            ProjectDirectoryEntryState::InOriginalLocation
+                            Arc::new(Mutex::new(ProjectDirectoryEntryState::InOriginalLocation))
                         },
                         stats: Arc::new(Mutex::new(None)),
                     });
@@ -136,15 +139,12 @@ impl ProjectState {
                         let name = directory.name.to_owned();
                         let stats = directory.stats();
                         let size_cell = match stats {
-                            Some(Ok(ref stats)) => stats.size.to_string().into(),
+                            Some(Ok(ref stats)) => stats.size.to_string(),
                             Some(Err(_)) => "⚠️".into(),
-                            None => format!(
-                                "{}",
-                                throbber_with_style(frame, &ThrobberStyle::BRAILLE_CIRCLE)
-                            )
-                            .into(),
+                            None => throbber_with_style(frame, &ThrobberStyle::BRAILLE_CIRCLE)
+                                .to_string(),
                         };
-                        let state = match &directory.state {
+                        let state = match directory.state.lock().unwrap().deref() {
                             ProjectDirectoryEntryState::InOriginalLocation => match stats {
                                 Some(Ok(ref stats)) => {
                                     if stats.symlink_count > 0 {
@@ -164,12 +164,36 @@ impl ProjectState {
                                 style = style.green();
                                 format!("→ {}", path.display())
                             }
-                            _ => format!("{:?}", directory.state), // TODO
+                            ProjectDirectoryEntryState::MovingTo { path, progress } => {
+                                let progress = progress.lock().unwrap();
+                                let stage = progress.stage;
+                                style = style.yellow();
+                                let percentage = progress
+                                    .progress
+                                    .lock()
+                                    .unwrap()
+                                    .copied_size_frac()
+                                    .into_percent();
+                                drop(progress);
+                                format!(
+                                    "{} {} ({})",
+                                    throbber_with_style(frame, &ThrobberStyle::ARROW_RIGHT),
+                                    path.display(),
+                                    match stage {
+                                        MoveAndSymlinkStage::Copying =>
+                                            format!("COPYING {:.1}%", percentage),
+                                        MoveAndSymlinkStage::Symlinking =>
+                                            format!("SYMLINKING {:.1}%", percentage),
+                                        _ => "FINISHING".to_string(),
+                                    }
+                                )
+                            }
+                            ProjectDirectoryEntryState::MovingFrom { path, progress } => todo!(),
                         };
                         Row::new([name, size_cell, state]).style(style)
                     }
                     ProjectEntry::File(file) => {
-                        Row::new(vec![file.name.clone(), file.size.to_string().into()]).style(style)
+                        Row::new(vec![file.name.clone(), file.size.to_string()]).style(style)
                     }
                 }
             }),
@@ -236,14 +260,17 @@ impl ProjectState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ProjectDirectoryEntryState {
     /// The directory is in its original location.
     InOriginalLocation,
     /// The directory is symlinked to another location.
     SymlinkedTo { path: PathBuf },
     /// The directory is being moved to another location.
-    MovingTo { path: PathBuf, progress: Fraction },
+    MovingTo {
+        path: PathBuf,
+        progress: Arc<Mutex<MoveAndSymlinkProgress>>,
+    },
     /// The directory is being moved back from another location.
     MovingFrom { path: PathBuf, progress: Fraction },
 }
@@ -257,7 +284,7 @@ pub enum ProjectEntry {
 #[derive(Debug)]
 pub struct ProjectDirectoryEntry {
     pub name: String,
-    pub state: ProjectDirectoryEntryState,
+    pub state: Arc<Mutex<ProjectDirectoryEntryState>>,
     stats: Arc<Mutex<Option<Result<DirectoryStats, DirectoryStatsError>>>>,
 }
 
@@ -270,6 +297,73 @@ impl ProjectDirectoryEntry {
         let mut mutex_guard = self.stats.lock().unwrap();
         assert!(mutex_guard.is_none());
         *mutex_guard = Some(stats);
+    }
+
+    pub fn can_be_moved(&self) -> bool {
+        match self.state.lock().unwrap().deref() {
+            ProjectDirectoryEntryState::InOriginalLocation => self.stats().map_or(false, |stats| {
+                stats
+                    .as_ref()
+                    .map_or(false, |stats| stats.symlink_count == 0)
+            }),
+            _ => false,
+        }
+    }
+
+    pub fn can_be_moved_back(&self) -> bool {
+        match self.state.lock().unwrap().deref() {
+            ProjectDirectoryEntryState::SymlinkedTo { .. } => self.stats().map_or(false, |stats| {
+                stats
+                    .as_ref()
+                    .map_or(false, |stats| stats.symlink_count == 0)
+            }),
+            _ => false,
+        }
+    }
+
+    pub fn try_start_move_to(
+        &self,
+        project_state: &ProjectState,
+        to_path: PathBuf,
+    ) -> Result<(), ()> {
+        if !self.can_be_moved() {
+            return Err(());
+        }
+
+        let from_path = project_state.directory.join(&self.name);
+
+        let progress = Arc::new(Mutex::new(MoveAndSymlinkProgress::from(
+            &self.stats().unwrap().unwrap(),
+        )));
+
+        *self.state.lock().unwrap() = ProjectDirectoryEntryState::MovingTo {
+            path: to_path.clone(),
+            progress: progress.clone(),
+        };
+
+        let state = self.state.clone();
+
+        IO_EXECUTOR
+            .spawn(async move {
+                let result = from_path
+                    .move_and_symlink(&to_path, Some(progress), None)
+                    .await;
+
+                let mut state = state.lock().unwrap();
+
+                match result {
+                    Ok(_) => {
+                        *state = ProjectDirectoryEntryState::SymlinkedTo { path: to_path };
+                    }
+                    Err(err) => {
+                        error!("Failed to move directory: {:?}", err);
+                        *state = ProjectDirectoryEntryState::InOriginalLocation;
+                    }
+                }
+            })
+            .detach();
+
+        Ok(())
     }
 }
 

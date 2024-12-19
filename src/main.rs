@@ -11,16 +11,11 @@ mod volume_information;
 mod widgets;
 
 use crate::file_size::num_ext::AsBytes;
-use crate::path_ext::{ProcessDirectoryProgress, PathExt, MoveAndSymlinkProgress};
-use log::{debug, error, info, LevelFilter};
-use smol::{block_on, Executor, Timer};
+use crate::path_ext::PathExt;
+use log::LevelFilter;
+use smol::{block_on, Executor};
 use std::future::pending;
 use std::{io, thread};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use crate::file_size::FileSize;
-use crate::sync::CancellationToken;
 
 pub static IO_EXECUTOR: Executor = Executor::new();
 
@@ -36,22 +31,22 @@ fn main() -> io::Result<()> {
     //     })
     //     .detach();
 
-    IO_EXECUTOR
-        .spawn(async {
-            let source = Path::new("D:\\pre-copy");
-            let dest = Path::new("D:\\post-copy");
-
-            let stats = source.calc_directory_stats(None).await.unwrap();
-
-            let progress = Arc::new(Mutex::new(MoveAndSymlinkProgress::from(&stats)));
-
-            let res = source
-                .move_and_symlink(dest, Some(progress.clone()), None)
-                .await;
-
-            info!("Result: {:?}", res);
-        })
-        .detach();
+    // IO_EXECUTOR
+    //     .spawn(async {
+    //         let source = Path::new("D:\\pre-copy");
+    //         let dest = Path::new("D:\\post-copy");
+    //
+    //         let stats = source.calc_directory_stats(None).await.unwrap();
+    //
+    //         let progress = Arc::new(Mutex::new(MoveAndSymlinkProgress::from(&stats)));
+    //
+    //         let res = source
+    //             .move_and_symlink(dest, Some(progress.clone()), None)
+    //             .await;
+    //
+    //         info!("Result: {:?}", res);
+    //     })
+    //     .detach();
 
     let mut terminal = ratatui::init();
     terminal.clear()?;

@@ -65,13 +65,13 @@ impl<'a> ThrobberStyle<'a> {
     };
 
     pub const ARROW_LEFT: ThrobberStyle<'static> = ThrobberStyle {
-        speed: 4,
+        speed: 8,
         frames: &["   ", "  ←", " ← ", "←  "],
     };
 
     pub const ARROW_RIGHT: ThrobberStyle<'static> = ThrobberStyle {
-        speed: 4,
-        frames: &["   ", "  →", " → ", "→  "],
+        speed: 8,
+        frames: &["   ", "→  ", " → ", "  →"],
     };
 }
 
