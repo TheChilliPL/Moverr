@@ -3,6 +3,7 @@ mod file_size;
 mod fraction;
 mod path_ext;
 mod popups;
+mod progress;
 mod project;
 mod sync;
 mod throbber;

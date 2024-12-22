@@ -190,6 +190,26 @@ macro_rules! impl_as_any_mut {
 pub(crate) use impl_as_any;
 pub(crate) use impl_as_any_mut;
 
+pub trait Pad {
+    fn pad_left(self, width: usize) -> String;
+    fn pad_center(self, width: usize) -> String;
+    fn pad_right(self, width: usize) -> String;
+}
+
+impl Pad for &str {
+    fn pad_left(self, width: usize) -> String {
+        format!("{:>width$}", self, width = width)
+    }
+
+    fn pad_center(self, width: usize) -> String {
+        format!("{:^width$}", self, width = width)
+    }
+
+    fn pad_right(self, width: usize) -> String {
+        format!("{:<width$}", self, width = width)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +252,13 @@ mod tests {
         assert!(test_struct.as_any().is::<TestStruct>());
 
         assert!(test_struct.as_any().is::<String>().not());
+    }
+
+    #[test]
+    fn pad_test() {
+        let str = "test";
+        assert_eq!(str.pad_left(10), "      test");
+        assert_eq!(str.pad_center(10), "   test   ");
+        assert_eq!(str.pad_right(10), "test      ");
     }
 }

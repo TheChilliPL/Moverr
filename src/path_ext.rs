@@ -43,6 +43,12 @@ pub trait PathExt {
         progress: Option<Arc<Mutex<MoveAndSymlinkProgress>>>,
         cancellation_token: Option<Arc<CancellationToken>>,
     ) -> Result<(), MoveAndSymlinkError>;
+    async fn move_back(
+        &self,
+        dest: &Path,
+        progress: Option<Arc<Mutex<MoveBackProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), MoveBackError>;
 }
 
 impl PathExt for Path {
@@ -381,6 +387,7 @@ impl PathExt for Path {
         }
 
         if let Some(progress) = progress.as_ref() {
+            inner_progress.as_ref().unwrap().lock().unwrap().zero();
             progress.lock().unwrap().stage = MoveAndSymlinkStage::Verifying;
         }
 
@@ -391,7 +398,7 @@ impl PathExt for Path {
         if let Err(err) = verify_res {
             return match err {
                 VerifyDirectoryError::Cancelled => Err(MoveAndSymlinkError::Cancelled),
-                VerifyDirectoryError::InvalidData => Err(MoveAndSymlinkError::SymlinkEncountered),
+                VerifyDirectoryError::InvalidData => Err(MoveAndSymlinkError::VerificationFailed),
                 VerifyDirectoryError::Io(e) => Err(MoveAndSymlinkError::Io(e)),
             };
         }
@@ -414,6 +421,76 @@ impl PathExt for Path {
 
         if let Some(progress) = progress.as_ref() {
             progress.lock().unwrap().stage = MoveAndSymlinkStage::Finished;
+        }
+
+        Ok(())
+    }
+
+    async fn move_back(
+        &self,
+        dest: &Path,
+        progress: Option<Arc<Mutex<MoveBackProgress>>>,
+        cancellation_token: Option<Arc<CancellationToken>>,
+    ) -> Result<(), MoveBackError> {
+        let inner_progress = if let Some(progress) = progress.as_ref() {
+            let mut progress = progress.lock().unwrap();
+            progress.stage = MoveBackStage::RemovingSymlink;
+            Some(progress.progress.clone())
+        } else {
+            None
+        };
+
+        let remove_symlink_res = async_fs::remove_dir(self).await;
+
+        if let Err(err) = remove_symlink_res {
+            return Err(MoveBackError::Io(err.kind()));
+        }
+
+        if let Some(progress) = progress.as_ref() {
+            inner_progress.as_ref().unwrap().lock().unwrap().zero();
+            progress.lock().unwrap().stage = MoveBackStage::Copying;
+        }
+
+        let copy_res = dest
+            .copy_directory(self, inner_progress.clone(), cancellation_token.clone())
+            .await;
+
+        if let Err(err) = copy_res {
+            return match err {
+                CopyDirectoryError::DestinationExists => {
+                    panic!("This should never happen. Destination should be the symlink.")
+                }
+                CopyDirectoryError::SymlinkEncountered => Err(MoveBackError::SymlinkEncountered),
+                CopyDirectoryError::Cancelled => Err(MoveBackError::Cancelled),
+                CopyDirectoryError::Io(e) => Err(MoveBackError::Io(e)),
+            };
+        }
+
+        if let Some(progress) = progress.as_ref() {
+            inner_progress.as_ref().unwrap().lock().unwrap().zero();
+            progress.lock().unwrap().stage = MoveBackStage::Verifying;
+        }
+
+        let verify_res = self
+            .verify_copy(dest, inner_progress.clone(), cancellation_token.clone())
+            .await;
+
+        if let Err(err) = verify_res {
+            return match err {
+                VerifyDirectoryError::Cancelled => Err(MoveBackError::Cancelled),
+                VerifyDirectoryError::InvalidData => Err(MoveBackError::VerificationFailed),
+                VerifyDirectoryError::Io(e) => Err(MoveBackError::Io(e)),
+            };
+        }
+
+        let remove_res = async_fs::remove_dir_all(dest).await;
+
+        if let Err(err) = remove_res {
+            return Err(MoveBackError::Io(err.kind()));
+        }
+
+        if let Some(progress) = progress.as_ref() {
+            progress.lock().unwrap().stage = MoveBackStage::Finished;
         }
 
         Ok(())
@@ -517,6 +594,7 @@ pub enum MoveAndSymlinkError {
     Io(io::ErrorKind),
     DestinationExists,
     SymlinkEncountered,
+    VerificationFailed,
     Cancelled,
 }
 
@@ -536,6 +614,47 @@ impl MoveAndSymlinkProgress {
     pub fn new(total_files: u32, total_size: FileSize) -> Self {
         Self {
             stage: MoveAndSymlinkStage::Copying,
+            progress: Arc::new(Mutex::new(ProcessDirectoryProgress::new(
+                total_files,
+                total_size,
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum MoveBackStage {
+    #[default]
+    RemovingSymlink,
+    Copying,
+    Verifying,
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MoveBackError {
+    Io(io::ErrorKind),
+    SymlinkEncountered,
+    VerificationFailed,
+    Cancelled,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MoveBackProgress {
+    pub stage: MoveBackStage,
+    pub progress: Arc<Mutex<ProcessDirectoryProgress>>,
+}
+
+impl From<&DirectoryStats> for MoveBackProgress {
+    fn from(value: &DirectoryStats) -> Self {
+        Self::new(value.file_count, value.size)
+    }
+}
+
+impl MoveBackProgress {
+    pub fn new(total_files: u32, total_size: FileSize) -> Self {
+        Self {
+            stage: MoveBackStage::RemovingSymlink,
             progress: Arc::new(Mutex::new(ProcessDirectoryProgress::new(
                 total_files,
                 total_size,

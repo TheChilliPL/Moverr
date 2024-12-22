@@ -370,6 +370,30 @@ fn handle_term_event(event: Event, state: &mut MoverrApp) {
                                 }
                                 return;
                             }
+                            KeyCode::Left => {
+                                let selected_id = project.table_state.selected();
+                                if let Some(selected_id) = selected_id {
+                                    let entry = &project.entries[selected_id];
+                                    match entry {
+                                        crate::project::ProjectEntry::Directory(dir) => {
+                                            let res = dir.try_start_move_back(project);
+
+                                            if res.is_err() {
+                                                error!(
+                                                    "Directory {:?} couldn't be moved back!",
+                                                    dir
+                                                );
+                                            }
+                                        }
+                                        crate::project::ProjectEntry::File(file) => {
+                                            warn!("Selected file: {:?}. Nothing to do!", file);
+                                        }
+                                    }
+                                } else {
+                                    warn!("No entry selected!");
+                                }
+                                return;
+                            }
                             _ => {}
                         }
                     }

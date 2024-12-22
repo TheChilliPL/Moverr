@@ -3,24 +3,26 @@ use crate::file_size::num_ext::AsBytes;
 use crate::file_size::FileSize;
 use crate::fraction::Fraction;
 use crate::path_ext::{
-    DirectoryStats, DirectoryStatsError, MoveAndSymlinkProgress, MoveAndSymlinkStage, PathExt,
+    DirectoryStats, DirectoryStatsError, MoveAndSymlinkProgress, MoveAndSymlinkStage,
+    MoveBackProgress, MoveBackStage, PathExt,
 };
+use crate::progress::progress_bar;
 use crate::sync::CancellationToken;
 use crate::throbber::{throbber_with_style, ThrobberStyle};
 use crate::IO_EXECUTOR;
-use crossterm::style::style;
 use futures_concurrency::concurrent_stream::IntoConcurrentStream;
 use futures_concurrency::future::Join;
 use log::{debug, error, info, warn};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::prelude::Style;
-use ratatui::style::{Modifier, Stylize};
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Styled, Stylize};
+use ratatui::text::{Line, ToLine, ToSpan};
 use ratatui::widgets::block::{title, Title};
 use ratatui::widgets::{Block, ListState, Row, Table, TableState, Widget};
 use ratatui::Frame;
 use smol::{spawn, Executor};
+use std::borrow::Cow;
 use std::fs::read_dir;
 use std::future::Future;
 use std::ops::Deref;
@@ -127,16 +129,26 @@ impl ProjectState {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+        let widths = [
+            Constraint::Min(25),
+            Constraint::Length(10),
+            Constraint::Percentage(70),
+        ];
+        let progress_width = Layout::horizontal(widths).split(area)[2].width as usize;
         let widget = Table::new(
             self.entries.iter().enumerate().map(|(id, entry)| {
                 let mut style = Style::default();
                 let is_selected = self.table_state.selected() == Some(id);
-                if is_selected {
-                    style = style.reversed();
-                }
+                // if is_selected {
+                //     style = style.reversed();
+                // }
                 match entry {
                     ProjectEntry::Directory(directory) => {
-                        let name = directory.name.to_owned();
+                        let name = &directory.name;
+                        let mut name_fmt = Line::from(name.clone());
+                        if is_selected {
+                            name_fmt = name_fmt.reversed();
+                        }
                         let stats = directory.stats();
                         let size_cell = match stats {
                             Some(Ok(ref stats)) => stats.size.to_string(),
@@ -144,64 +156,101 @@ impl ProjectState {
                             None => throbber_with_style(frame, &ThrobberStyle::BRAILLE_CIRCLE)
                                 .to_string(),
                         };
-                        let state = match directory.state.lock().unwrap().deref() {
+                        let state: Line = match directory.state.lock().unwrap().deref() {
                             ProjectDirectoryEntryState::InOriginalLocation => match stats {
                                 Some(Ok(ref stats)) => {
                                     if stats.symlink_count > 0 {
                                         style = style.red();
-                                        "Can't move: has symlinks".to_string()
+                                        "Can't move: has symlinks".into()
                                     } else {
-                                        "".to_string()
+                                        "".into()
                                     }
                                 }
                                 Some(Err(ref err)) => {
                                     style = style.yellow();
-                                    format!("Couldn't read size: {:?}", err)
+                                    format!("Couldn't read size: {:?}", err).into()
                                 }
-                                None => "".to_string(),
+                                None => "".into(),
                             },
                             ProjectDirectoryEntryState::SymlinkedTo { path } => {
                                 style = style.green();
-                                format!("→ {}", path.display())
+                                format!("→ {}", path.display()).into()
                             }
                             ProjectDirectoryEntryState::MovingTo { path, progress } => {
                                 let progress = progress.lock().unwrap();
                                 let stage = progress.stage;
-                                style = style.yellow();
-                                let percentage = progress
-                                    .progress
-                                    .lock()
-                                    .unwrap()
-                                    .copied_size_frac()
-                                    .into_percent();
+                                style = style.blue();
+                                let stage_progress = progress.progress.lock().unwrap();
+                                let copied = stage_progress.copied_size_frac();
+                                let percentage = copied.into_percent();
+                                let processed_size = stage_progress.processed_size;
+                                let total_size = stage_progress.total_size;
+                                drop(stage_progress);
                                 drop(progress);
-                                format!(
+                                let str = format!(
                                     "{} {} ({})",
                                     throbber_with_style(frame, &ThrobberStyle::ARROW_RIGHT),
                                     path.display(),
                                     match stage {
-                                        MoveAndSymlinkStage::Copying =>
-                                            format!("COPYING {:.1}%", percentage),
-                                        MoveAndSymlinkStage::Symlinking =>
-                                            format!("SYMLINKING {:.1}%", percentage),
-                                        _ => "FINISHING".to_string(),
+                                        MoveAndSymlinkStage::Copying => format!(
+                                            "COPYING {:.1}% {}/{}",
+                                            percentage, processed_size, total_size
+                                        ),
+                                        MoveAndSymlinkStage::Verifying => format!(
+                                            "VERIFYING {:.1}% {}/{}",
+                                            percentage, processed_size, total_size
+                                        ),
+                                        MoveAndSymlinkStage::Symlinking => "SYMLINKING".to_string(),
+                                        MoveAndSymlinkStage::Finished => String::new(),
                                     }
-                                )
+                                );
+                                progress_bar(Cow::Owned(str), copied, progress_width)
                             }
-                            ProjectDirectoryEntryState::MovingFrom { path, progress } => todo!(),
+                            ProjectDirectoryEntryState::MovingFrom { path, progress } => {
+                                let progress = progress.lock().unwrap();
+                                let stage = progress.stage;
+                                style = style.blue();
+                                let stage_progress = progress.progress.lock().unwrap();
+                                let copied = stage_progress.copied_size_frac();
+                                let percentage = copied.into_percent();
+                                let processed_size = stage_progress.processed_size;
+                                let total_size = stage_progress.total_size;
+                                drop(stage_progress);
+                                drop(progress);
+                                let str = format!(
+                                    "{} {} ({})",
+                                    throbber_with_style(frame, &ThrobberStyle::ARROW_LEFT),
+                                    path.display(),
+                                    match stage {
+                                        MoveBackStage::RemovingSymlink =>
+                                            "REMOVING SYMLINK".to_string(),
+                                        MoveBackStage::Copying => format!(
+                                            "COPYING {:.1}% {}/{}",
+                                            percentage, processed_size, total_size
+                                        ),
+                                        MoveBackStage::Verifying => format!(
+                                            "VERIFYING {:.1}% {}/{}",
+                                            percentage, processed_size, total_size
+                                        ),
+                                        MoveBackStage::Finished => String::new(),
+                                    }
+                                );
+                                progress_bar(Cow::Owned(str), copied, progress_width)
+                            }
                         };
-                        Row::new([name, size_cell, state]).style(style)
+                        Row::new([name_fmt, size_cell.into(), state]).style(style)
                     }
                     ProjectEntry::File(file) => {
-                        Row::new(vec![file.name.clone(), file.size.to_string()]).style(style)
+                        let name = &file.name;
+                        let mut name_fmt = Line::from(name.clone());
+                        if is_selected {
+                            name_fmt = name_fmt.reversed();
+                        }
+                        Row::new(vec![name_fmt, file.size.to_string().into()]).style(style)
                     }
                 }
             }),
-            [
-                Constraint::Min(25),
-                Constraint::Length(10),
-                Constraint::Percentage(70),
-            ],
+            widths,
         )
         .header(Row::new(["Name", "Size", ""]).bold().reversed())
         .block(
@@ -272,7 +321,10 @@ pub enum ProjectDirectoryEntryState {
         progress: Arc<Mutex<MoveAndSymlinkProgress>>,
     },
     /// The directory is being moved back from another location.
-    MovingFrom { path: PathBuf, progress: Fraction },
+    MovingFrom {
+        path: PathBuf,
+        progress: Arc<Mutex<MoveBackProgress>>,
+    },
 }
 
 #[derive(Debug)]
@@ -358,6 +410,49 @@ impl ProjectDirectoryEntry {
                     Err(err) => {
                         error!("Failed to move directory: {:?}", err);
                         *state = ProjectDirectoryEntryState::InOriginalLocation;
+                    }
+                }
+            })
+            .detach();
+
+        Ok(())
+    }
+
+    pub fn try_start_move_back(&self, project_state: &ProjectState) -> Result<(), ()> {
+        if !self.can_be_moved_back() {
+            return Err(());
+        }
+
+        let from_path = project_state.directory.join(&self.name);
+        let to_path = match self.state.lock().unwrap().deref() {
+            ProjectDirectoryEntryState::SymlinkedTo { path } => path.clone(),
+            _ => unreachable!(),
+        };
+
+        let progress = Arc::new(Mutex::new(MoveBackProgress::from(
+            &self.stats().unwrap().unwrap(),
+        )));
+
+        *self.state.lock().unwrap() = ProjectDirectoryEntryState::MovingFrom {
+            path: to_path.clone(),
+            progress: progress.clone(),
+        };
+
+        let state = self.state.clone();
+
+        IO_EXECUTOR
+            .spawn(async move {
+                let result = from_path.move_back(&to_path, Some(progress), None).await;
+
+                let mut state = state.lock().unwrap();
+
+                match result {
+                    Ok(_) => {
+                        *state = ProjectDirectoryEntryState::InOriginalLocation;
+                    }
+                    Err(err) => {
+                        error!("Failed to move directory back: {:?}", err);
+                        *state = ProjectDirectoryEntryState::SymlinkedTo { path: to_path };
                     }
                 }
             })

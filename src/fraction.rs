@@ -1,6 +1,6 @@
 use crate::file_size::FileSize;
 use std::fmt::{Debug, Display, Formatter};
-use std::ops::{Add, Sub};
+use std::ops::{Add, Mul, Sub};
 
 /// A simple struct representing a fraction from 0 to 1.
 #[repr(transparent)]
@@ -127,6 +127,14 @@ impl Sub for Fraction {
 
     fn sub(self, rhs: Self) -> Self::Output {
         Fraction(self.0 - rhs.0)
+    }
+}
+
+impl Mul<f64> for Fraction {
+    type Output = f64;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        self.into_f64() * rhs
     }
 }
 
