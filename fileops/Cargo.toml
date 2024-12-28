@@ -1,0 +1,32 @@
+[package]
+name = "fileops"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+atomiq.workspace = true
+flagset = "0.4.6"
+log-error.workspace = true
+log.workspace = true
+num-format.workspace = true
+smol.workspace = true
+widestring = "1.1.0"
+loom = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+pretty_assertions.workspace = true
+test-log.workspace = true
+uuid.workspace = true
+
+[features]
+#default = ["async-fs"]
+#async-fs = ["dep:async-fs"]
+loom = ["dep:loom", "atomiq/compat_loom"]

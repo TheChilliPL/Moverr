@@ -1,7 +1,4 @@
 mod app;
-mod file_size;
-mod fraction;
-mod path_ext;
 mod popups;
 mod progress;
 mod project;
@@ -11,8 +8,6 @@ mod utils;
 mod volume_information;
 mod widgets;
 
-use crate::file_size::num_ext::AsBytes;
-use crate::path_ext::PathExt;
 use log::LevelFilter;
 use smol::{block_on, Executor};
 use std::future::pending;

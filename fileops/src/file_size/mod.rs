@@ -3,6 +3,8 @@ use num_format::{CustomFormat, Grouping, ToFormattedString};
 use std::fmt::{Debug, Display};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
+mod atomic;
+pub use atomic::*;
 pub mod num_ext;
 pub mod units;
 

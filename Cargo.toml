@@ -1,8 +1,9 @@
 [workspace]
-
 members = [
     "moverr",
+    "fileops",
 ]
+resolver = "2"
 
 [workspace.package]
 authors = ["Chilli <chilli@thechilli.dev>"]
@@ -10,3 +11,18 @@ edition = "2021"
 repository = "https://github.com/TheChilliPL/Moverr"
 readme = "README.md"
 license = "MPL-2"
+
+[workspace.dependencies]
+atomiq = "0.1.1"
+cfg-if = "1.0.0"
+env_logger = "0.11.6"
+futures-lite = { version = "2.5.0", default-features = false, features = ["futures-io", "std"] }
+log = "0.4.22"
+log-error = "0.1.1"
+loom = "0.7.2"
+num-format = "0.4.4"
+pretty_assertions = "1.4.1"
+smol = "2.0.2"
+test-log = "0.2.16"
+uuid = { version = "1.11.0", features = ["v4", "fast-rng"] }
+windows = { version = "0.58.0", features = ["Win32_Storage_FileSystem"] }
