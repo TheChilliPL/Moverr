@@ -96,93 +96,134 @@ where
     Ok(())
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::file_size::AtomicFileSize;
-//     use crate::prelude::AsBytes;
-//     use crate::progress::copy_file::copy_file_with_progress;
-//     use crate::progress::AtomicDirectoryProgress;
-//     use atomiq::compat::core::*;
-//     use atomiq::Ordering;
-//     use log::{debug, info};
-//     use std::path::Path;
-//     use std::thread;
-//     use std::time::Duration;
-//     use test_log::test;
-//
-//     #[test]
-//     fn test() {
-//         let source_path_s =
-//         let source_path = Path::new(source_path_s);
-//         let dest_path = source_path.parent().unwrap().join("copy");
-//
-//         let size = std::fs::metadata(source_path).unwrap().len().bytes();
-//
-//         let progress: AtomicDirectoryProgress<AtomicU64, AtomicFileSize<AtomicU64>> =
-//             AtomicDirectoryProgress::new_zeroed(1, size);
-//
-//         info!("Spawning threads...");
-//         thread::scope(|s| {
-//             let a = s.spawn(|| {
-//                 smol::block_on(async {
-//                     copy_file_with_progress(source_path, &dest_path, &progress)
-//                         .await
-//                         .unwrap();
-//                 });
-//             });
-//
-//             let b = s.spawn(|| {
-//                 smol::block_on(async {
-//                     loop {
-//                         let progress = progress.load(Ordering::Relaxed);
-//
-//                         debug!(
-//                             "Processed files: {}/{} ({:.2}%)",
-//                             progress.processed_files,
-//                             progress.total_files,
-//                             (progress.processed_files as f64 / progress.total_files as f64) * 100.0
-//                         );
-//                         debug!(
-//                             "Processed size: {}/{} ({:.2}%)",
-//                             progress.processed_size,
-//                             progress.total_size,
-//                             (progress.processed_size.as_bytes() as f64
-//                                 / progress.total_size.as_bytes() as f64)
-//                                 * 100.0
-//                         );
-//
-//                         if progress.processed_files == progress.total_files {
-//                             break;
-//                         }
-//
-//                         smol::Timer::after(Duration::from_millis(1000)).await;
-//                     }
-//                 });
-//             });
-//
-//             a.join().unwrap();
-//             b.join().unwrap();
-//         });
-//
-//         info!("Done");
-//
-//         let progress = progress.load(Ordering::Relaxed);
-//
-//         assert_eq!(progress.processed_files, 1);
-//         assert_eq!(progress.processed_size, size);
-//
-//         debug!(
-//             "Processed files: {}/{} ({:.2}%)",
-//             progress.processed_files,
-//             progress.total_files,
-//             (progress.processed_files as f64 / progress.total_files as f64) * 100.0
-//         );
-//         debug!(
-//             "Processed size: {}/{} ({:.2}%)",
-//             progress.processed_size,
-//             progress.total_size,
-//             (progress.processed_size.as_bytes() as f64 / progress.total_size.as_bytes() as f64)
-//                 * 100.0
-//         );
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use crate::file_size::AtomicFileSize;
+    use crate::prelude::{AsBytes, AsBytesMult, FileSize};
+    use crate::progress::copy_file::copy_file_with_progress;
+    use crate::progress::AtomicDirectoryProgress;
+    use atomiq::compat::core::*;
+    use atomiq::Ordering;
+    use log::{debug, info};
+    use rand::Rng;
+    use std::io::Write;
+    use std::ops::Rem;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use std::{env, thread};
+    use test_log::test;
+    use uuid::Uuid;
+
+    fn create_temp_file(min_size: FileSize) -> std::io::Result<PathBuf> {
+        info!("Creating temporary file of size >={}...", min_size);
+        let temp_dir = env::temp_dir();
+        let uuid = Uuid::new_v4().to_string();
+        let file_name = format!("moverr_test_{}", uuid);
+        let file_path = temp_dir.join(file_name);
+        let mut file = std::fs::File::create_new(&file_path)?;
+        let mut rng = rand::thread_rng();
+
+        const BUFFER_SIZE: u64 = 1024;
+        let rem_some = min_size.as_bytes().rem(BUFFER_SIZE) > 0;
+        let buffer_writes = min_size.as_bytes() / BUFFER_SIZE + rem_some as u64;
+        let real_size = (buffer_writes * BUFFER_SIZE).bytes();
+        debug!("Real size: {}", real_size);
+        file.set_len(real_size.as_bytes())?;
+        let mut written_size = 0.bytes();
+        let mut buffer = [0u8; 1024];
+        rng.fill(&mut buffer);
+        while written_size < real_size {
+            file.write_all(&buffer)?;
+
+            written_size += (buffer.len() as u64).bytes();
+        }
+
+        info!("Created temporary file: {}", file_path.display());
+        Ok(file_path)
+    }
+
+    #[test]
+    fn test() {
+        let source_path = create_temp_file(500.mb()).unwrap();
+
+        let dest_path = source_path.with_file_name(format!(
+            "{}_copy",
+            source_path.file_name().unwrap().to_str().unwrap()
+        ));
+
+        let size = std::fs::metadata(&source_path).unwrap().len().bytes();
+
+        let progress: AtomicDirectoryProgress<AtomicU64, AtomicFileSize<AtomicU64>> =
+            AtomicDirectoryProgress::new_zeroed(1, size);
+
+        info!("Spawning threads...");
+        thread::scope(|s| {
+            let a = s.spawn(|| {
+                smol::block_on(async {
+                    copy_file_with_progress(&source_path, &dest_path, &progress)
+                        .await
+                        .unwrap();
+                });
+            });
+
+            let b = s.spawn(|| {
+                smol::block_on(async {
+                    loop {
+                        let progress = progress.load(Ordering::Relaxed);
+
+                        debug!(
+                            "Processed files: {}/{} ({:.2}%)",
+                            progress.processed_files,
+                            progress.total_files,
+                            (progress.processed_files as f64 / progress.total_files as f64) * 100.0
+                        );
+                        debug!(
+                            "Processed size: {}/{} ({:.2}%)",
+                            progress.processed_size,
+                            progress.total_size,
+                            (progress.processed_size.as_bytes() as f64
+                                / progress.total_size.as_bytes() as f64)
+                                * 100.0
+                        );
+
+                        if progress.processed_files == progress.total_files {
+                            break;
+                        }
+
+                        smol::Timer::after(Duration::from_millis(1000)).await;
+                    }
+                });
+            });
+
+            a.join().unwrap();
+            b.join().unwrap();
+        });
+
+        info!("Done");
+
+        // Cleanup
+        std::fs::remove_file(&source_path).unwrap();
+        std::fs::remove_file(&dest_path).unwrap();
+
+        info!("Cleaned up");
+
+        let progress = progress.load(Ordering::Relaxed);
+
+        assert_eq!(progress.processed_files, 1);
+        assert_eq!(progress.processed_size, size);
+
+        debug!(
+            "Processed files: {}/{} ({:.2}%)",
+            progress.processed_files,
+            progress.total_files,
+            (progress.processed_files as f64 / progress.total_files as f64) * 100.0
+        );
+        debug!(
+            "Processed size: {}/{} ({:.2}%)",
+            progress.processed_size,
+            progress.total_size,
+            (progress.processed_size.as_bytes() as f64 / progress.total_size.as_bytes() as f64)
+                * 100.0
+        );
+    }
+}

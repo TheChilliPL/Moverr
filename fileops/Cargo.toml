@@ -13,6 +13,7 @@ flagset = "0.4.6"
 log-error.workspace = true
 log.workspace = true
 num-format.workspace = true
+rand.workspace = true
 smol.workspace = true
 widestring = "1.1.0"
 loom = { workspace = true, optional = true }

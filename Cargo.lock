@@ -541,6 +541,7 @@ dependencies = [
  "loom 0.7.2",
  "num-format",
  "pretty_assertions",
+ "rand",
  "smol",
  "test-log",
  "uuid",
