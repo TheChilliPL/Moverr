@@ -16,6 +16,7 @@ num-format.workspace = true
 rand.workspace = true
 smol.workspace = true
 thiserror.workspace = true
+unifrac.workspace = true
 widestring = "1.1.0"
 loom = { workspace = true, optional = true }
 

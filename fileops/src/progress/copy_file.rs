@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use windows::Win32::Storage::FileSystem::{FILE_SHARE_NONE, FILE_SHARE_READ};
 
-async fn copy_file_with_progress<'a>(
+pub async fn copy_file_with_progress<'a>(
     src: &'a Path,
     dst: &'a Path,
     progress: &'a AtomicDirectoryProgress,
@@ -96,7 +96,6 @@ mod tests {
     use crate::prelude::{AsBytes, AsBytesMult, FileSize};
     use crate::progress::copy_file::copy_file_with_progress;
     use crate::progress::AtomicDirectoryProgress;
-    use atomiq::Ordering;
     use log::{debug, info};
     use rand::Rng;
     use std::io::Write;

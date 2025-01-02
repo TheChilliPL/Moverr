@@ -1,9 +1,12 @@
 mod copy_file;
 mod stage;
 
+pub use copy_file::copy_file_with_progress;
+
 use crate::dirstats::DirectoryStats;
 use crate::prelude::{AsBytes, FileSize};
 use atomiq::{Atomic, Atomize, Ordering};
+use unifrac::Primant;
 
 #[derive(Debug, Clone)]
 pub struct DirectoryProgress {
@@ -27,6 +30,14 @@ impl DirectoryProgress {
             processed_files: 0,
             processed_size: 0.bytes(),
         }
+    }
+
+    pub fn files_to_primant(&self) -> Primant {
+        Primant::from_ratio_saturating(self.processed_files, self.total_files)
+    }
+
+    pub fn size_to_primant(&self) -> Primant {
+        Primant::from_ratio_saturating(self.processed_size.as_bytes(), self.total_size.as_bytes())
     }
 }
 

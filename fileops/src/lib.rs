@@ -18,7 +18,6 @@ pub use pathext::PathExt;
 pub mod progress;
 
 pub mod file_size;
-pub mod fraction;
 pub mod prelude;
 #[cfg(windows)]
 pub mod volume;
