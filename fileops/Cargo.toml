@@ -15,6 +15,7 @@ log.workspace = true
 num-format.workspace = true
 rand.workspace = true
 smol.workspace = true
+thiserror.workspace = true
 widestring = "1.1.0"
 loom = { workspace = true, optional = true }
 
@@ -30,4 +31,4 @@ uuid.workspace = true
 [features]
 #default = ["async-fs"]
 #async-fs = ["dep:async-fs"]
-loom = ["dep:loom", "atomiq/compat_loom"]
+loom = ["dep:loom", "atomiq/loom"]

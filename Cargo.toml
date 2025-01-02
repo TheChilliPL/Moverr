@@ -13,7 +13,8 @@ readme = "README.md"
 license = "MPL-2"
 
 [workspace.dependencies]
-atomiq = "0.1.1"
+anyhow = "1.0.95"
+atomiq = "0.2.0"
 cfg-if = "1.0.0"
 env_logger = "0.11.6"
 futures-lite = { version = "2.5.0", default-features = false, features = ["futures-io", "std"] }
@@ -25,5 +26,6 @@ pretty_assertions = "1.4.1"
 rand = "0.8.5"
 smol = "2.0.2"
 test-log = "0.2.16"
+thiserror = "2.0.9"
 uuid = { version = "1.11.0", features = ["v4", "fast-rng"] }
 windows = { version = "0.58.0", features = ["Win32_Storage_FileSystem"] }

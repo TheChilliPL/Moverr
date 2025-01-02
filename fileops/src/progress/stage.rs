@@ -1,4 +1,4 @@
-use atomiq::compat::SimpleAtomic;
+use atomiq::{Atomic, Atomizable, Atomize};
 use std::sync::atomic::Ordering;
 
 pub struct ProgressWithStage<Stage, Progress> {
@@ -12,41 +12,44 @@ impl<Stage, Progress> ProgressWithStage<Stage, Progress> {
     }
 }
 
-pub struct AtomicProgressWithStage<Stage, AtomicStage, AtomicProgress>
+pub struct AtomicProgressWithStage<Stage, AtomicProgress>
 where
-    AtomicStage: SimpleAtomic<Value = Stage>,
+    Stage: Atomizable,
 {
-    stage: AtomicStage,
+    stage: Atomic<Stage>,
     pub progress: AtomicProgress,
 }
 
-impl<Stage, AtomicStage, Progress, AtomicProgress> From<ProgressWithStage<Stage, Progress>>
-    for AtomicProgressWithStage<Stage, AtomicStage, AtomicProgress>
+impl<Stage, Progress, AtomicProgress> From<ProgressWithStage<Stage, Progress>>
+    for AtomicProgressWithStage<Stage, AtomicProgress>
 where
-    AtomicStage: SimpleAtomic<Value = Stage>,
+    Stage: Atomizable,
     AtomicProgress: From<Progress>,
 {
     fn from(progress_with_stage: ProgressWithStage<Stage, Progress>) -> Self {
         Self {
-            stage: AtomicStage::from(progress_with_stage.stage),
+            stage: progress_with_stage.stage.atomize(),
             progress: AtomicProgress::from(progress_with_stage.progress),
         }
     }
 }
 
-impl<Stage, AtomicStage, AtomicProgress> AtomicProgressWithStage<Stage, AtomicStage, AtomicProgress>
+impl<Stage, AtomicProgress> AtomicProgressWithStage<Stage, AtomicProgress>
 where
-    AtomicStage: SimpleAtomic<Value = Stage>,
+    Stage: Atomizable,
 {
-    pub fn new(stage: AtomicStage, progress: AtomicProgress) -> Self {
-        Self { stage, progress }
+    pub fn new(stage: Stage, progress: impl Into<AtomicProgress>) -> Self {
+        Self {
+            stage: stage.atomize(),
+            progress: progress.into(),
+        }
     }
 
-    pub fn load_stage(&self, ordering: Ordering) -> Stage {
-        self.stage.load(ordering)
+    pub fn load_stage(&self) -> Stage {
+        self.stage.load(Ordering::Relaxed)
     }
 
-    pub fn store_stage(&self, value: Stage, ordering: Ordering) {
-        self.stage.store(value, ordering)
+    pub fn store_stage(&self, value: Stage) {
+        self.stage.store(value, Ordering::Relaxed)
     }
 }

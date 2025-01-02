@@ -6,7 +6,9 @@ version = 4
 name = "Moverr"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-fs",
+ "atomiq",
  "crossterm",
  "embed-manifest",
  "futures-concurrency",
@@ -98,6 +100,12 @@ dependencies = [
  "anstyle",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "anyhow"
+version = "1.0.95"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34ac096ce696dc2fcabef30516bb13c0a68a11d30131d3df6f04711467681b04"
 
 [[package]]
 name = "arrayvec"
@@ -233,11 +241,23 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atomiq"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d390765ee10ae2ac33318d1dc56c5b75175ab0fb58bb8e85484a1662e9744ded"
+checksum = "6a51eb3f2b7091e322cb1b734927678316f1fac543d2aefc36bd54bf02db4962"
 dependencies = [
+ "atomiq-derive",
+ "cfg-if",
  "loom 0.7.2",
+]
+
+[[package]]
+name = "atomiq-derive"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e92792d7e3e44a7579d8f3b994c25433dc6337f242bde45ea42026c4d2aff060"
+dependencies = [
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -544,6 +564,7 @@ dependencies = [
  "rand",
  "smol",
  "test-log",
+ "thiserror",
  "uuid",
  "widestring",
  "windows 0.58.0",
@@ -1328,9 +1349,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.92"
+version = "2.0.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70ae51629bf965c5c098cc9e87908a3df5301051a9e087d6f9bef5c9771ed126"
+checksum = "987bc0be1cdea8b10216bd06e2ca407d40b9543468fafd3ddfb02f36e77f71f3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1353,6 +1374,26 @@ name = "test-log-macros"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5999e24eaa32083191ba4e425deb75cdf25efefabe5aaccb7446dd0d4122a3f5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f072643fd0190df67a8bab670c20ef5d8737177d6ac6b2e9a236cb096206b2cc"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b50fa271071aae2e6ee85f842e2e28ba8cd2c5fb67f11fcb1fd70b276f9e7d4"
 dependencies = [
  "proc-macro2",
  "quote",

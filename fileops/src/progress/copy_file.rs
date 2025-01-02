@@ -4,21 +4,16 @@ use crate::prelude::fs::windows::OpenOptionsExt;
 use crate::prelude::*;
 use crate::progress::AtomicDirectoryProgress;
 use crate::Result;
-use atomiq::compat::IntAtomic;
 use smol::io::{AsyncReadExt, AsyncWriteExt};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use windows::Win32::Storage::FileSystem::{FILE_SHARE_NONE, FILE_SHARE_READ};
 
-async fn copy_file_with_progress<'a, T, U>(
+async fn copy_file_with_progress<'a>(
     src: &'a Path,
     dst: &'a Path,
-    progress: &'a AtomicDirectoryProgress<T, U>,
-) -> Result<()>
-where
-    T: IntAtomic<Value = u64>,
-    U: IntAtomic<Value = FileSize>,
-{
+    progress: &'a AtomicDirectoryProgress,
+) -> Result<()> {
     let src_meta = fs::symlink_metadata(src)
         .await
         .map_err(|e| Error::Io(e.kind()))?;
@@ -41,7 +36,7 @@ where
         // Small files are copied without progress.
         let copied_bytes = fs::copy(src, dst).await.map_err(|e| Error::Io(e.kind()))?;
 
-        progress.add_file(copied_bytes.bytes(), Ordering::Relaxed);
+        progress.add_file(copied_bytes.bytes());
 
         return Ok(());
     }
@@ -61,7 +56,7 @@ where
         .map_err(|e| Error::Io(e.kind()))?;
 
     // First we allocate the file size.
-    // TODO Avoid filling the file with zeros. (May require Windows-specific implementation.)
+    // TODO Avoid filling the file with zeros. (May require platform-specific implementation.)
     dst_file
         .set_len(file_size.as_bytes())
         .await
@@ -98,11 +93,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::file_size::AtomicFileSize;
     use crate::prelude::{AsBytes, AsBytesMult, FileSize};
     use crate::progress::copy_file::copy_file_with_progress;
     use crate::progress::AtomicDirectoryProgress;
-    use atomiq::compat::core::*;
     use atomiq::Ordering;
     use log::{debug, info};
     use rand::Rng;
@@ -153,8 +146,7 @@ mod tests {
 
         let size = std::fs::metadata(&source_path).unwrap().len().bytes();
 
-        let progress: AtomicDirectoryProgress<AtomicU64, AtomicFileSize<AtomicU64>> =
-            AtomicDirectoryProgress::new_zeroed(1, size);
+        let progress: AtomicDirectoryProgress = AtomicDirectoryProgress::new_zeroed(1, size);
 
         info!("Spawning threads...");
         thread::scope(|s| {
@@ -169,7 +161,7 @@ mod tests {
             let b = s.spawn(|| {
                 smol::block_on(async {
                     loop {
-                        let progress = progress.load(Ordering::Relaxed);
+                        let progress = progress.load();
 
                         debug!(
                             "Processed files: {}/{} ({:.2}%)",
@@ -207,7 +199,7 @@ mod tests {
 
         info!("Cleaned up");
 
-        let progress = progress.load(Ordering::Relaxed);
+        let progress = progress.load();
 
         assert_eq!(progress.processed_files, 1);
         assert_eq!(progress.processed_size, size);

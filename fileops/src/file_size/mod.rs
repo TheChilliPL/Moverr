@@ -1,19 +1,20 @@
 use crate::file_size::units::FileSizeUnit;
+use atomiq::derive::{Atomizable, IntAtomizable};
 use num_format::{CustomFormat, Grouping, ToFormattedString};
 use std::fmt::{Debug, Display};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
-mod atomic;
-pub use atomic::*;
 pub mod num_ext;
 pub mod units;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Atomizable, IntAtomizable, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FileSize(u64);
 
 impl FileSize {
-    pub(crate) const ZERO: FileSize = FileSize(0);
+    pub const ZERO: FileSize = FileSize(0);
+    pub const MIN: FileSize = FileSize(0);
+    pub const MAX: FileSize = FileSize(u64::MAX);
 
     pub fn from_bytes(bytes: u64) -> Self {
         Self(bytes)

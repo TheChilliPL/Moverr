@@ -38,6 +38,56 @@ impl TryFrom<f32> for Fraction {
 }
 
 impl Fraction {
+    pub fn try_from_percent(percent: f64) -> Option<Fraction> {
+        if (0.0..=100.0).contains(&percent) {
+            Some(Fraction::try_from(percent / 100.0).ok()?)
+        } else {
+            None
+        }
+    }
+
+    pub fn from_f64_unchecked(value: f64) -> Fraction {
+        Fraction((value * (u32::MAX as f64)) as u32)
+    }
+
+    pub fn from_f32_unchecked(value: f32) -> Fraction {
+        Fraction((value * (u32::MAX as f32)) as u32)
+    }
+
+    pub fn from_percent_unchecked(percent: f64) -> Fraction {
+        Fraction::from_f64_unchecked(percent / 100.0)
+    }
+
+    pub fn from_f64_saturating(value: f64) -> Fraction {
+        if value < 0.0 {
+            Fraction::MIN
+        } else if value > 1.0 {
+            Fraction::MAX
+        } else {
+            Fraction::from_f64_unchecked(value)
+        }
+    }
+
+    pub fn from_f32_saturating(value: f32) -> Fraction {
+        if value < 0.0 {
+            Fraction::MIN
+        } else if value > 1.0 {
+            Fraction::MAX
+        } else {
+            Fraction::from_f32_unchecked(value)
+        }
+    }
+
+    pub fn from_percent_saturating(percent: f64) -> Fraction {
+        if percent < 0.0 {
+            Fraction::MIN
+        } else if percent > 100.0 {
+            Fraction::MAX
+        } else {
+            Fraction::from_percent_unchecked(percent)
+        }
+    }
+
     pub fn into_f64(self) -> f64 {
         self.0 as f64 / u32::MAX as f64
     }
@@ -49,56 +99,48 @@ impl Fraction {
     pub fn into_percent(self) -> f64 {
         self.into_f64() * 100.0
     }
-
-    pub fn from_percent(percent: f64) -> Result<Fraction, ()> {
-        if (0.0..=100.0).contains(&percent) {
-            Ok(Fraction::try_from(percent / 100.0)?)
-        } else {
-            Err(())
-        }
-    }
 }
 
-pub trait FromRatio<T> {
-    fn from_ratio(numerator: T, denominator: T) -> Result<Fraction, ()>;
+pub trait TryFromRatio<T> {
+    fn try_from_ratio(numerator: T, denominator: T) -> Option<Fraction>;
 }
 
-impl FromRatio<u32> for Fraction {
-    fn from_ratio(numerator: u32, denominator: u32) -> Result<Fraction, ()> {
+impl TryFromRatio<u32> for Fraction {
+    fn try_from_ratio(numerator: u32, denominator: u32) -> Option<Fraction> {
         if denominator == 0 {
-            return Err(());
+            return None;
         }
-        Fraction::try_from(numerator as f64 / denominator as f64)
+        Fraction::try_from(numerator as f64 / denominator as f64).ok()
     }
 }
 
-impl FromRatio<u64> for Fraction {
-    fn from_ratio(numerator: u64, denominator: u64) -> Result<Fraction, ()> {
+impl TryFromRatio<u64> for Fraction {
+    fn try_from_ratio(numerator: u64, denominator: u64) -> Option<Fraction> {
         if denominator == 0 {
-            return Err(());
+            return None;
         }
-        Fraction::try_from(numerator as f64 / denominator as f64)
+        Fraction::try_from(numerator as f64 / denominator as f64).ok()
     }
 }
 
-impl FromRatio<FileSize> for Fraction {
-    fn from_ratio(numerator: FileSize, denominator: FileSize) -> Result<Fraction, ()> {
+impl TryFromRatio<FileSize> for Fraction {
+    fn try_from_ratio(numerator: FileSize, denominator: FileSize) -> Option<Fraction> {
         if denominator == FileSize::ZERO {
-            return Err(());
+            return None;
         }
-        Fraction::try_from((numerator.as_bytes() as f64) / (denominator.as_bytes() as f64))
+        Fraction::try_from((numerator.as_bytes() as f64) / (denominator.as_bytes() as f64)).ok()
     }
 }
 
-impl Into<f64> for Fraction {
-    fn into(self) -> f64 {
-        self.into_f64()
+impl From<Fraction> for f64 {
+    fn from(fraction: Fraction) -> f64 {
+        fraction.into_f64()
     }
 }
 
-impl Into<f32> for Fraction {
-    fn into(self) -> f32 {
-        self.into_f32()
+impl From<Fraction> for f32 {
+    fn from(fraction: Fraction) -> f32 {
+        fraction.into_f32()
     }
 }
 
@@ -172,13 +214,13 @@ mod tests {
 
     #[test]
     fn test_from_percent() {
-        let fraction = Fraction::from_percent(50.0).unwrap();
+        let fraction = Fraction::try_from_percent(50.0).unwrap();
         assert_approx_eq(fraction.into_f64(), 0.5);
     }
 
     #[test]
     fn test_from_ratio() {
-        let fraction = Fraction::from_ratio(1u32, 2u32).unwrap();
+        let fraction = Fraction::try_from_ratio(1u32, 2u32).unwrap();
         assert_approx_eq(fraction.into_f64(), 0.5);
     }
 
