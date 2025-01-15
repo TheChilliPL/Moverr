@@ -2,7 +2,6 @@ mod app;
 mod popups;
 mod progress;
 mod project;
-mod sync;
 mod throbber;
 mod utils;
 mod volume_information;

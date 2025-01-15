@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "moverr",
-    "fileops",
 ]
 resolver = "2"
 
@@ -13,8 +12,7 @@ readme = "README.md"
 license = "MPL-2"
 
 [workspace.dependencies]
-anyhow = "1.0.95"
-atomiq = "0.2.0"
+atomiq = { git = "https://github.com/TheChilliPL/atomiq", branch = "main" }
 cfg-if = "1.0.0"
 env_logger = "0.11.6"
 futures-lite = { version = "2.5.0", default-features = false, features = ["futures-io", "std"] }

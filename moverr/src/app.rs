@@ -1,7 +1,7 @@
 use crate::popups::{OpenProjectPopup, Popup};
 use crate::project::{ProjectDirectoryEntryState, ProjectState};
-use crate::sync::CancellationToken;
 use crate::widgets::{TextInput, TextInputState};
+use atomiq::{Cancel, CancellationToken};
 use crossterm::event;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use log::{error, info, warn};
